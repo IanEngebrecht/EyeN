@@ -1,6 +1,6 @@
 #pragma once
 /*
- * EyeAN – deployment configuration
+ * EyeN – deployment configuration
  *
  * This is the single file to edit when changing hardware layout, sensor
  * placement, or tuning parameters.  Rebuild after changes:  idf.py build
@@ -84,7 +84,7 @@ typedef struct {
     bool        inverted;
     int         mux_channel;
     bool        enabled;
-} eyean_sensor_cfg_t;
+} eyen_sensor_cfg_t;
 
 #define CFG_SENSORS                                                           \
     { "lower", UART_NUM_2, 16, 17, -20, false, -1, true  },                  \

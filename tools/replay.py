@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-EyeAN log visualizer — replay from file or stream live from serial.
+EyeN log visualizer — replay from file or stream live from serial.
 
 Usage:
     python replay.py <logfile.txt>                         # replay from file
@@ -9,7 +9,7 @@ Usage:
     python replay.py --live /dev/ttyUSB0                   # live from serial
     python replay.py --live /dev/ttyUSB0 --baud 115200     # custom baud
 
-Reads $FRAME and $LOST lines emitted by EyeAN firmware.
+Reads $FRAME and $LOST lines emitted by EyeN firmware.
 In live mode, sliders let you tune LD2450 sensor parameters on the fly.
 """
 
@@ -635,7 +635,7 @@ def run_live(port, baud):
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="EyeAN log visualizer")
+    parser = argparse.ArgumentParser(description="EyeN log visualizer")
     parser.add_argument("logfile", nargs="?", help="Log file for replay mode")
     parser.add_argument("--speed", type=float, default=1.0,
                         help="Replay speed (0 = step mode, default 1.0)")

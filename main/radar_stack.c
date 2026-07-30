@@ -17,7 +17,7 @@ static const char *TAG = "radar_stack";
 #define PI_F 3.14159265f
 #define LD2450_TARGET_SLOTS 3
 
-static const eyean_sensor_cfg_t s_cfg[] = { CFG_SENSORS };
+static const eyen_sensor_cfg_t s_cfg[] = { CFG_SENSORS };
 #define SLOT_COUNT ((int)(sizeof(s_cfg) / sizeof(s_cfg[0])))
 
 /* Indices into s_cfg sorted by ascending pitch_deg. */

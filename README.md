@@ -1,4 +1,4 @@
-# EyeAN
+# EyeN
 
 ESP32 digital eyes: dual GC9A01 round LCDs track people via a **pitch-stacked** pair of HLK-LD2450 radars (same roll, different pitch). Vertical gaze comes from which sensors see the person; horizontal gaze from averaged azimuth.
 
@@ -61,7 +61,7 @@ Point each module’s **copper-patch face** at the walkway. The plug-in adhesive
 
 ```bash
 source ~/esp/esp-idf/export.sh
-cd ~/esp/EyeAN
+cd ~/esp/EyeN
 idf.py set-target esp32
 idf.py build flash monitor
 ```
