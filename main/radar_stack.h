@@ -22,11 +22,15 @@ typedef struct {
 typedef struct {
     bool    human;
     float   azimuth_deg;
-    int     vertical_band;
+    float   elevation_norm; /* 0 = pupil bottom, 1 = top */
+    int     vertical_band;  /* multi backend; -1 when unused */
     int     band_count;
     uint8_t see_mask;
 
     ld2450_target_t primary;
+
+    /* Bumps only when a new UART radar frame was parsed (not on stale reuse). */
+    uint32_t         frame_id;
 
     int              total_targets;
     int              slot_count;

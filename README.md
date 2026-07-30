@@ -1,6 +1,6 @@
 # EyeN
 
-ESP32 digital eyes: dual GC9A01 round LCDs track people via a **pitch-stacked** pair of HLK-LD2450 radars (same roll, different pitch). Vertical gaze comes from which sensors see the person; horizontal gaze from averaged azimuth.
+ESP32 digital eyes: dual GC9A01 round LCDs track people via a single HLK-LD2450 radar. Horizontal gaze comes from target azimuth; vertical gaze is estimated from range plus a potentiometer that dials in mount height (eye-level vs floor, etc.).
 
 **Board:** ELEGOO ESP32-WROOM-32
 
@@ -10,7 +10,7 @@ Silk labels:
 
 ## Wiring
 
-Common **GND**. Displays → **3V3**. Radars → **VIN** (~5V when USB-powered).
+Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
 
@@ -24,38 +24,39 @@ Common **GND**. Displays → **3V3**. Radars → **VIN** (~5V when USB-powered).
 | CS left / right | **D5** / **D15** |
 | RST | **D4** (shared) |
 
-### Pitch-stack LD2450s
+Panel rotation is set in `config.h` (`CFG_LCD_LEFT_ROTATION_DEG` / `CFG_LCD_RIGHT_ROTATION_DEG`). Default is 90° / 270° for outward-facing flex cables. Use 0 / 180 / 90 / 270.
 
-| Sensor | Mount pitch | Sensor TX → ESP | ESP → Sensor RX |
-|--------|-------------|-----------------|-----------------|
-| **Lower** | ~−20° | **RX2** (GPIO 16) | **TX2** (GPIO 17) |
-| **Upper** | ~+20° | **D21** (GPIO 21) | **D22** (GPIO 22) |
+### LD2450 (single sensor)
 
-Both: VCC→**VIN**, GND→**GND**. Copper faces the walkway with **4 pads bottom / 2 pads top**; only the up/down nod (pitch) differs between lower and upper.
+| Signal | ESP32 silk |
+|--------|------------|
+| Sensor TX → ESP | **RX2** (GPIO 16) |
+| ESP → Sensor RX | **TX2** (GPIO 17) |
 
-The **TX wiring** (ESP → Sensor RX) is needed for live tuning of sensor parameters from the Python tool. If you only need tracking without tuning, the TX wires can be left unconnected.
+VCC→**VIN**, GND→**GND**. Mount flat (~0° pitch). Copper face toward the walkway with **4 pads bottom / 2 pads top** so left/right (`x`) tracks correctly.
+
+The **TX wiring** (ESP → Sensor RX) is needed for live tuning from the Python tool. Tracking alone can leave TX unconnected.
 
 Do **not** use `RX0`/`TX0` (USB serial). Baud **256000** 8N1.
 
-### Later: third (mid) sensor + 74HC4051
+### Mount-height potentiometer
 
-Software already uses an N-slot table with a reserved `mux_channel`. When the mux arrives, add a mid slot (~0° pitch) and optionally move all three TX lines through the 4051 into one UART. See comments in `pinout.h` / `radar_stack.c`.
+| Pot | ESP32 |
+|-----|-------|
+| Wiper | **D34** (GPIO 34, ADC1) |
+| Ends | **3V3** and **GND** |
 
-## Vertical bands (2 sensors)
+Maps ADC → sensor mount height (default 0–2000 mm). Assumed person aim height is ~1500 mm (torso/face). Elevation is `atan2(aim − mount, range)` mapped into pupil Y. Tune the pot for your placement rather than rebuilding.
 
-| Who sees the person | Band | Pupil |
-|---------------------|------|-------|
-| Upper only | 2 | top |
-| Both | 1 | center |
-| Lower only | 0 | bottom |
+## Vertical estimate (single sensor)
+
+Closer targets at a large height delta look steeper; far targets flatten toward center. With the pot at mid-range (sensor ≈ aim height), vertical stays near center at all distances.
 
 ## Orientation
 
-Point each module’s **copper-patch face** at the walkway. The plug-in adhesive antenna is **Bluetooth only** — not for tracking.
+Point the module’s **copper-patch face** at the walkway. The plug-in adhesive antenna is **Bluetooth only** — not for tracking.
 
-**Roll (critical for left/right):** hold the board so the copper face is toward you with **four pads on the bottom and two on the top**. That is the orientation where sensor `x` tracks left/right well. Do **not** mount it “landscape” with pads left/right of each other — left/right gaze will feel wrong or weak.
-
-**Pitch (for the stack):** keep that same roll on both sensors, then nod them differently (~−20° lower, ~+20° upper) so their elevation FOVs cover different heights. Copper faces still point into the room.
+**Roll (critical for left/right):** copper face toward you with **four pads on the bottom and two on the top**. Do **not** mount “landscape” with pads left/right of each other.
 
 ## Build / flash
 
@@ -86,4 +87,14 @@ Sliders control LD2450 parameters in real time:
 - **Min speed filter** (0–100 cm/s): ignores static targets below threshold
 - **Hold time** (0–60 s): how long a target persists after leaving FOV
 
-Settings are sent to *all* sensors and persist across power cycles on the LD2450.
+Settings persist across power cycles on the LD2450.
+
+## Restoring multi-sensor (pitch stack)
+
+The pitch-stacked fusion lives in `main/radar_stack_multi.c` but is **not linked** by default.
+
+1. In [`main/CMakeLists.txt`](main/CMakeLists.txt), set `RADAR_SRC` to `radar_stack_multi.c`.
+2. In [`main/config.h`](main/config.h), restore the commented two-row `CFG_SENSORS` (lower ~−20°, upper ~+20° on UART2 + UART1).
+3. Rebuild. Vertical then comes from visibility bands again; the potentiometer is unused in that build.
+
+Optional later: third (mid) sensor + 74HC4051 — multi code already has `mux_channel` hooks.

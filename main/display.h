@@ -14,10 +14,10 @@ esp_err_t display_init(void);
 void display_clear(void);
 
 /**
- * Move the tracking dot on both eyes.
- * Erases the previous position and draws a black circle at (x, y).
+ * Move / resize the tracking dot on both eyes.
+ * Erases the previous circle and draws a black circle at (x, y) with radius r.
  */
-void display_set_dot(int x, int y);
+void display_set_dot(int x, int y, int radius);
 
 #ifdef __cplusplus
 }

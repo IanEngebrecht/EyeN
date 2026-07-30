@@ -5,6 +5,7 @@
 
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -17,11 +18,19 @@ static const char *TAG = "EyeN";
 
 #define CMD_BUF_SIZE 128
 
+/* Azimuth hold + coast between 10 Hz radar frames. */
+static bool     s_az_have;
+static float    s_az_fixed;       /* last accepted radar azimuth (deg) */
+static float    s_az_rate;        /* deg/s from recent accepted steps   */
+static int64_t  s_az_fixed_us;    /* time of last real radar frame      */
+static uint32_t s_az_last_frame;
+
 static void clamp_to_circle(float *x, float *y)
 {
     const float cx = (CFG_LCD_H_RES - 1) * 0.5f;
     const float cy = (CFG_LCD_V_RES - 1) * 0.5f;
-    const float max_r = (CFG_LCD_H_RES * 0.5f) - (float)CFG_DOT_RADIUS - 2.0f;
+    /* Use max radius so a large close-up pupil never clips the rim. */
+    const float max_r = (CFG_LCD_H_RES * 0.5f) - (float)CFG_DOT_RADIUS_MAX - 2.0f;
     const float dx = *x - cx;
     const float dy = *y - cy;
     const float dist = sqrtf(dx * dx + dy * dy);
@@ -32,9 +41,24 @@ static void clamp_to_circle(float *x, float *y)
     }
 }
 
-static void gaze_to_target(const radar_gaze_t *g, float *tx, float *ty)
+/** Closer → larger pupil. Distance outside [NEAR, FAR] clamps to the ends. */
+static float radius_from_distance_mm(uint16_t dist_mm)
 {
-    float deg = g->azimuth_deg;
+    float d = (float)dist_mm;
+    if (d <= (float)CFG_DOT_NEAR_MM)
+        return (float)CFG_DOT_RADIUS_MAX;
+    if (d >= (float)CFG_DOT_FAR_MM)
+        return (float)CFG_DOT_RADIUS_MIN;
+    float t = (d - (float)CFG_DOT_NEAR_MM) /
+              (float)(CFG_DOT_FAR_MM - CFG_DOT_NEAR_MM);
+    return (float)CFG_DOT_RADIUS_MAX +
+           t * (float)(CFG_DOT_RADIUS_MIN - CFG_DOT_RADIUS_MAX);
+}
+
+static void gaze_xy_from_az_elev(float az_deg, float elev_norm,
+                                 float *tx, float *ty)
+{
+    float deg = az_deg;
     if (deg < -CFG_GAZE_MAX_DEG)
         deg = -CFG_GAZE_MAX_DEG;
     else if (deg > CFG_GAZE_MAX_DEG)
@@ -43,14 +67,69 @@ static void gaze_to_target(const radar_gaze_t *g, float *tx, float *ty)
     *tx = ((deg + CFG_GAZE_MAX_DEG) / (2.0f * CFG_GAZE_MAX_DEG)) *
           (float)(CFG_LCD_H_RES - 1);
 
-    if (g->vertical_band < 0 || g->band_count <= 1) {
-        *ty = (float)(CFG_LCD_V_RES / 2);
-    } else {
-        const float t =
-            (float)g->vertical_band / (float)(g->band_count - 1);
-        *ty = (1.0f - t) * (float)(CFG_LCD_V_RES - 1);
-    }
+    float elev = elev_norm;
+    if (elev < 0.0f)
+        elev = 0.0f;
+    else if (elev > 1.0f)
+        elev = 1.0f;
+    *ty = (1.0f - elev) * (float)(CFG_LCD_V_RES - 1);
     clamp_to_circle(tx, ty);
+}
+
+/**
+ * Deadband noisy azimuth steps; estimate rate on accepted steps; coast
+ * between real radar frames (frame_id bumps) so walking doesn't wait on 10 Hz.
+ */
+static float aim_azimuth_deg(const radar_gaze_t *g)
+{
+    const int64_t now = esp_timer_get_time();
+    const float az = g->azimuth_deg;
+
+    if (!s_az_have) {
+        s_az_fixed = az;
+        s_az_rate = 0.0f;
+        s_az_fixed_us = now;
+        s_az_last_frame = g->frame_id;
+        s_az_have = true;
+        return az;
+    }
+
+    if (g->frame_id != s_az_last_frame) {
+        const float daz = az - s_az_fixed;
+        const float dt =
+            (float)(now - s_az_fixed_us) * 1e-6f;
+
+        if (fabsf(daz) >= CFG_GAZE_AZ_DEADBAND_DEG) {
+            if (dt > 0.04f && dt < 0.6f) {
+                const float inst = daz / dt;
+                s_az_rate += (inst - s_az_rate) * 0.45f;
+            }
+            s_az_fixed = az;
+        } else {
+            /* Below deadband: treat as stationary → kill coast rate. */
+            s_az_rate *= 0.35f;
+        }
+        s_az_fixed_us = now;
+        s_az_last_frame = g->frame_id;
+    }
+
+    float age = (float)(now - s_az_fixed_us) * 1e-6f;
+    if (age < 0.0f) age = 0.0f;
+    if (age > 0.25f) age = 0.25f; /* don't coast across long gaps */
+
+    float coast = s_az_rate * age;
+    if (coast > CFG_GAZE_COAST_MAX_DEG)
+        coast = CFG_GAZE_COAST_MAX_DEG;
+    else if (coast < -CFG_GAZE_COAST_MAX_DEG)
+        coast = -CFG_GAZE_COAST_MAX_DEG;
+
+    return s_az_fixed + coast;
+}
+
+static void reset_azimuth_coast(void)
+{
+    s_az_have = false;
+    s_az_rate = 0.0f;
 }
 
 /*
@@ -201,8 +280,11 @@ void app_main(void)
 
     float cur_x = center_x, cur_y = center_y;
     float tgt_x = center_x, tgt_y = center_y;
+    float cur_r = (float)CFG_DOT_RADIUS_MIN;
+    float tgt_r = cur_r;
 
-    display_set_dot((int)lroundf(cur_x), (int)lroundf(cur_y));
+    display_set_dot((int)lroundf(cur_x), (int)lroundf(cur_y),
+                    (int)lroundf(cur_r));
 
     bool last_human = false;
     int log_skip = 0;
@@ -219,10 +301,14 @@ void app_main(void)
         }
 
         if (gaze.human) {
-            gaze_to_target(&gaze, &tgt_x, &tgt_y);
+            float az = aim_azimuth_deg(&gaze);
+            gaze_xy_from_az_elev(az, gaze.elevation_norm, &tgt_x, &tgt_y);
+            tgt_r = radius_from_distance_mm(gaze.primary.distance_mm);
         } else {
             tgt_x = center_x;
             tgt_y = center_y;
+            tgt_r = (float)CFG_DOT_RADIUS_MIN;
+            reset_azimuth_coast();
             if (last_human) {
                 ESP_LOGI(TAG, "$LOST t=%lu", (unsigned long)esp_log_timestamp());
                 log_skip = 0;
@@ -232,15 +318,17 @@ void app_main(void)
 
         cur_x += (tgt_x - cur_x) * CFG_SMOOTH_H;
         cur_y += (tgt_y - cur_y) * CFG_SMOOTH_V;
+        cur_r += (tgt_r - cur_r) * CFG_SMOOTH_R;
 
         int eye_x = (int)lroundf(cur_x);
         int eye_y = (int)lroundf(cur_y);
+        int eye_r = (int)lroundf(cur_r);
 
         if (++log_skip >= 10) {
             log_skip = 0;
             log_frame(&gaze, eye_x, eye_y);
         }
 
-        display_set_dot(eye_x, eye_y);
+        display_set_dot(eye_x, eye_y, eye_r);
     }
 }

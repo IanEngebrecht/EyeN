@@ -24,6 +24,7 @@ static const eyen_sensor_cfg_t s_cfg[] = { CFG_SENSORS };
 static int  s_pitch_order[SLOT_COUNT];
 static int  s_enabled_count;
 static int  s_band_count;
+static uint32_t s_frame_id;
 
 typedef struct {
     ld2450_dev_t    *dev;
@@ -317,10 +318,13 @@ esp_err_t radar_stack_update(radar_gaze_t *out)
             memcpy(s_slots[i].targets, tmp, sizeof(tmp));
             s_slots[i].last_ok_tick = xTaskGetTickCount();
             s_slots[i].has_data = true;
+            s_frame_id++;
         } else if (err != ESP_ERR_TIMEOUT) {
             ESP_LOGW(TAG, "%s frame: %s", s_cfg[i].name, esp_err_to_name(err));
         }
     }
+
+    out->frame_id = s_frame_id;
 
     /* 1b. Fill per-slot info (all targets) for the caller. */
     int si = 0;
@@ -386,5 +390,12 @@ esp_err_t radar_stack_update(radar_gaze_t *out)
     out->primary       = seed;
     out->vertical_band = compute_band(ordered_mask, s_enabled_count);
     out->azimuth_deg   = (az_n > 0) ? (az_sum / (float)az_n) : 0.0f;
+
+    if (out->vertical_band < 0 || s_band_count <= 1) {
+        out->elevation_norm = 0.5f;
+    } else {
+        out->elevation_norm =
+            (float)out->vertical_band / (float)(s_band_count - 1);
+    }
     return ESP_OK;
 }
