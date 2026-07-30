@@ -13,7 +13,7 @@
 #include "ld2450.h"
 #include "radar_stack.h"
 
-static const char *TAG = "EyeAN";
+static const char *TAG = "EyeN";
 
 #define CMD_BUF_SIZE 128
 
@@ -190,7 +190,7 @@ static void init_uart0_rx(void)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "EyeAN starting");
+    ESP_LOGI(TAG, "EyeN starting");
 
     init_uart0_rx();
     ESP_ERROR_CHECK(display_init());
