@@ -429,6 +429,20 @@ esp_err_t ld2450_restart(ld2450_dev_t *dev)
     return send_config_cmd(dev, payload, sizeof(payload));
 }
 
+esp_err_t ld2450_set_output_rate(ld2450_dev_t *dev, uint8_t fps)
+{
+    if (!dev) return ESP_ERR_INVALID_ARG;
+    /* Frame rate: opcode 0x0A, parameter is the desired FPS (1-25 typical).
+       Different LD2450 firmware variants use different opcodes; if this doesn't
+       work, try 0x0B, 0x01, 0x12, etc. and check logs. */
+    uint8_t payload[4] = {
+        0x0A, 0x00,
+        fps, 0x00
+    };
+    ESP_LOGI(TAG, "UART%d set output_rate=%u fps", (int)dev->uart_num, fps);
+    return send_config_cmd(dev, payload, sizeof(payload));
+}
+
 /* ── Frame reading ───────────────────────────────────────────────── */
 
 esp_err_t ld2450_read_frame(ld2450_dev_t *dev, ld2450_target_t targets[3],

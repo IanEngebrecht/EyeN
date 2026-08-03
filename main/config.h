@@ -65,7 +65,8 @@
 
 /* ── Radar frame / filter tuning ─────────────────────────────────── */
 
-#define CFG_FRAME_TIMEOUT_MS    15      /* short so animation loop stays fluid */
+#define CFG_FRAME_TIMEOUT_MS    100     /* sensor outputs 10 Hz, so ~100ms between frames; 
+                                          long timeout to avoid missing queued frames in buffer */
 #define CFG_STALE_MS            500     /* drop a sensor's data after this   */
 
 /* Multi-backend association (used only by radar_stack_multi.c) */
@@ -84,6 +85,15 @@
 #define CFG_MUX_S0_GPIO    -1
 #define CFG_MUX_S1_GPIO    -1
 
+/* ── Mode button ─────────────────────────────────────────────────── */
+
+#define CFG_BUTTON_GPIO         19      /* pull-up; button shorts to GND     */
+#define CFG_BUTTON_DEBOUNCE_MS  200
+
+/* ── Radar display mode ──────────────────────────────────────────── */
+
+#define CFG_RADAR_SWEEP_MS      3000    /* one full sweep revolution (ms)    */
+
 /* ── Single-sensor vertical: distance + potentiometer ────────────── *
  *
  * elevation = atan2(person_aim_mm - mount_height_mm, range_y_mm)
@@ -99,6 +109,14 @@
 #define CFG_POT_MOUNT_MAX_MM    2000    /* pot at 100% → sensor ~2 m up       */
 #define CFG_PERSON_AIM_MM       1500    /* assumed torso/face height (mm)     */
 #define CFG_POT_SMOOTH          0.15f   /* ADC lerp factor (0‥1)             */
+
+/* Pot-as-mode-switch (temporary stand-in until a physical button is wired):
+ * turning the pot to either end past CFG_POT_LIMIT_ENTER switches to radar
+ * mode; turning it back past CFG_POT_LIMIT_EXIT (from either end) returns
+ * to eye mode. The gap between ENTER/EXIT is hysteresis so the mode doesn't
+ * chatter if the pot rests right at the threshold. */
+#define CFG_POT_LIMIT_ENTER     0.04f   /* within this fraction of an end → radar mode */
+#define CFG_POT_LIMIT_EXIT      0.10f   /* must move back in past this → eye mode */
 
 /* ── Sensor array ────────────────────────────────────────────────── *
  *

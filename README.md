@@ -29,6 +29,7 @@ Working prototype pinout (matches `main/config.h`). Common **GND**. Displays →
    Radar TX→ESP ────┤ RX2 (GPIO16)                            │
    ESP→Radar RX ────┤ TX2 (GPIO17)                            │
    Pot wiper ───────┤ D34                                     │
+   Button ──────────┤ D19 (other leg → GND)                   │
                     └─────────────────────────────────────────┘
 
    3V3 ──┬── Left GC9A01 VCC ── Right GC9A01 VCC ── Pot end A
@@ -40,6 +41,7 @@ Working prototype pinout (matches `main/config.h`). Common **GND**. Displays →
    D5  ──── Left CS             D15 ──── Right CS
    RX2 ←── LD2450 TX            TX2 ──→ LD2450 RX
    D34 ←── Pot wiper
+   D19 ←── Button (to GND)
 ```
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
@@ -78,6 +80,26 @@ The **TX wiring** (ESP → Sensor RX) is needed for live tuning from the Python 
 
 Maps ADC → sensor mount height (default 0–2000 mm). Assumed person aim height is ~1500 mm (torso/face). Elevation is `atan2(aim − mount, range)` mapped into pupil Y. Tune the pot for your placement rather than rebuilding.
 
+### Mode button
+
+| Button | ESP32 |
+|--------|-------|
+| One leg | **D19** (GPIO 19) |
+| Other leg | **GND** |
+
+Internal pull-up is enabled in firmware. No external resistor needed. Pressing the button cycles through display modes.
+
+## Display modes
+
+Press the button on **D19** to cycle. Current modes:
+
+1. **Eye** (default) — white background, black pupil tracks the nearest/moving person.
+2. **Radar** — green-on-black flight-radar aesthetic:
+   - *Left eye:* rotating PPI sweep over a 120° FOV wedge with range rings. Targets light up green when the sweep passes and fade back to black.
+   - *Right eye:* monospace data readout of the currently tracked target (X, Y, distance, speed, azimuth).
+
+Adding modes: create a new `main/mode_*.c`, implement the `display_mode_t` interface from `main/mode.h`, and register it in the `s_modes[]` table in `main/main.c`.
+
 ## Vertical estimate (single sensor)
 
 Closer targets at a large height delta look steeper; far targets flatten toward center. With the pot at mid-range (sensor ≈ aim height), vertical stays near center at all distances.
@@ -97,7 +119,7 @@ idf.py set-target esp32
 idf.py build flash monitor
 ```
 
-Logs: `$FRAME t=… eye=… sensor=count:targets` or `$LOST t=…`.
+Logs: `$FRAME t=… sensor=count:targets`, `$LOST t=…`, `$MODE <name>`.
 
 ## Visualization / live tuning
 

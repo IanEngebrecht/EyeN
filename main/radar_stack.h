@@ -55,6 +55,9 @@ typedef struct {
 void radar_stack_get_filter(radar_filter_cfg_t *out);
 void radar_stack_set_filter(const radar_filter_cfg_t *cfg);
 
+/** Smoothed potentiometer position, 0.0‥1.0 (0.5 if unavailable/unused). */
+float radar_stack_get_pot_frac(void);
+
 #ifdef __cplusplus
 }
 #endif

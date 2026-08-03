@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "esp_lcd_panel_ops.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,14 +11,10 @@ extern "C" {
 
 esp_err_t display_init(void);
 
-/** Fill both eyes white and reset tracked dot state. */
-void display_clear(void);
+esp_lcd_panel_handle_t display_get_panel_left(void);
+esp_lcd_panel_handle_t display_get_panel_right(void);
 
-/**
- * Move / resize the tracking dot on both eyes.
- * Erases the previous circle and draws a black circle at (x, y) with radius r.
- */
-void display_set_dot(int x, int y, int radius);
+void display_fill(esp_lcd_panel_handle_t panel, uint16_t color);
 
 #ifdef __cplusplus
 }

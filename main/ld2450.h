@@ -72,6 +72,9 @@ esp_err_t ld2450_set_zones(ld2450_dev_t *dev, uint16_t type,
 /** Restart the module (apply settings that need a reboot). */
 esp_err_t ld2450_restart(ld2450_dev_t *dev);
 
+/** Set the output frame rate in FPS (typically 1-25). */
+esp_err_t ld2450_set_output_rate(ld2450_dev_t *dev, uint8_t fps);
+
 #ifdef __cplusplus
 }
 #endif

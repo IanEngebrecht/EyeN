@@ -78,6 +78,12 @@ void radar_stack_set_filter(const radar_filter_cfg_t *cfg)
              s_filter.max_dist_mm, s_filter.persist_frames);
 }
 
+/* Multi-sensor backend has no potentiometer input; return neutral. */
+float radar_stack_get_pot_frac(void)
+{
+    return 0.5f;
+}
+
 typedef struct {
     int16_t x_mm;
     int16_t y_mm;

@@ -313,25 +313,34 @@ static esp_err_t pot_init(void)
     return ESP_OK;
 }
 
-/** Read pot → mount height in mm (person_aim − height drives elevation). */
-static float pot_mount_height_mm(void)
+/** Sample the pot ADC and update the smoothed 0‥1 fraction. Called once per
+    radar_stack_update(), independent of whether a human is being tracked, so
+    mode-switch logic in main.c always sees a fresh reading. */
+static void pot_update(void)
 {
-    if (!s_pot_ok || !s_adc)
-        return 0.5f * (CFG_POT_MOUNT_MIN_MM + CFG_POT_MOUNT_MAX_MM);
+    if (!s_pot_ok || !s_adc) return;
 
     int raw = 0;
     if (adc_oneshot_read(s_adc, CFG_POT_ADC_CHANNEL, &raw) != ESP_OK)
-        return CFG_POT_MOUNT_MIN_MM +
-               s_pot_filt * (CFG_POT_MOUNT_MAX_MM - CFG_POT_MOUNT_MIN_MM);
+        return;
 
     /* 12-bit ADC: 0‥4095 typical with default bitwidth. */
     float n = (float)raw / 4095.0f;
     if (n < 0.0f) n = 0.0f;
     if (n > 1.0f) n = 1.0f;
     s_pot_filt += (n - s_pot_filt) * CFG_POT_SMOOTH;
+}
 
+float radar_stack_get_pot_frac(void)
+{
+    return s_pot_ok ? s_pot_filt : 0.5f;
+}
+
+/** Pot fraction → mount height in mm (person_aim − height drives elevation). */
+static float pot_mount_height_mm(void)
+{
     return CFG_POT_MOUNT_MIN_MM +
-           s_pot_filt * (float)(CFG_POT_MOUNT_MAX_MM - CFG_POT_MOUNT_MIN_MM);
+           radar_stack_get_pot_frac() * (float)(CFG_POT_MOUNT_MAX_MM - CFG_POT_MOUNT_MIN_MM);
 }
 
 /**
@@ -426,6 +435,8 @@ esp_err_t radar_stack_update(radar_gaze_t *out)
     out->vertical_band  = -1;
     out->band_count     = 1;
     out->elevation_norm = 0.5f;
+
+    pot_update();
 
     if (!s_dev || s_slot < 0)
         return ESP_ERR_INVALID_STATE;
