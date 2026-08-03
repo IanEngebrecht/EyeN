@@ -17,8 +17,8 @@
 
 #define CFG_LCD_SCLK        18
 #define CFG_LCD_MOSI        23
-#define CFG_LCD_DC          27
-#define CFG_LCD_RST          4
+#define CFG_LCD_DC           4
+#define CFG_LCD_RST         27
 #define CFG_LCD_CS_LEFT      5
 #define CFG_LCD_CS_RIGHT    15
 #define CFG_LCD_SPI_HOST    SPI2_HOST

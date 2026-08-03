@@ -10,7 +10,37 @@ Silk labels:
 
 ## Wiring
 
-Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
+Working prototype pinout (matches `main/config.h`). Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
+
+### Net diagram
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │         ELEGOO ESP32-WROOM-32           │
+   3V3 ─────────────┤ 3V3                                     │
+   GND ─────────────┤ GND                                     │
+   VIN ─────────────┤ VIN  (~5V from USB)                     │
+   LCD SCL ─────────┤ D18                                     │
+   LCD SDA ─────────┤ D23                                     │
+   LCD DC  ─────────┤ D4                                      │
+   LCD RST ─────────┤ D27                                     │
+   LCD CS L ────────┤ D5                                      │
+   LCD CS R ────────┤ D15                                     │
+   Radar TX→ESP ────┤ RX2 (GPIO16)                            │
+   ESP→Radar RX ────┤ TX2 (GPIO17)                            │
+   Pot wiper ───────┤ D34                                     │
+                    └─────────────────────────────────────────┘
+
+   3V3 ──┬── Left GC9A01 VCC ── Right GC9A01 VCC ── Pot end A
+   GND ──┬── Left/Right GC9A01 GND ── LD2450 GND ── Pot end B
+   VIN ──── LD2450 VCC (5V)
+
+   D18 ──┬── Left/Right SCL     D23 ──┬── Left/Right SDA
+   D4  ──┬── Left/Right DC      D27 ──┬── Left/Right RST
+   D5  ──── Left CS             D15 ──── Right CS
+   RX2 ←── LD2450 TX            TX2 ──→ LD2450 RX
+   D34 ←── Pot wiper
+```
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
 
@@ -20,11 +50,11 @@ Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
 | GND | **GND** |
 | SCL | **D18** |
 | SDA | **D23** |
-| DC | **D27** |
+| DC | **D4** |
 | CS left / right | **D5** / **D15** |
-| RST | **D4** (shared) |
+| RST | **D27** (shared) |
 
-Panel rotation is set in `config.h` (`CFG_LCD_LEFT_ROTATION_DEG` / `CFG_LCD_RIGHT_ROTATION_DEG`). Default is 90° / 270° for outward-facing flex cables. Use 0 / 180 / 90 / 270.
+Only **CS** differs per eye; SCL/SDA/DC/RST are bused. Panel rotation is set in `config.h` (`CFG_LCD_LEFT_ROTATION_DEG` / `CFG_LCD_RIGHT_ROTATION_DEG`). Default is 90° / 270° for outward-facing flex cables. Use 0 / 180 / 90 / 270.
 
 ### LD2450 (single sensor)
 
@@ -35,9 +65,9 @@ Panel rotation is set in `config.h` (`CFG_LCD_LEFT_ROTATION_DEG` / `CFG_LCD_RIGH
 
 VCC→**VIN**, GND→**GND**. Mount flat (~0° pitch). Copper face toward the walkway with **4 pads bottom / 2 pads top** so left/right (`x`) tracks correctly.
 
-The **TX wiring** (ESP → Sensor RX) is needed for live tuning from the Python tool. Tracking alone can leave TX unconnected.
+You can solder to the module pads instead of the 4-pin plug. Use **5V, GND, TX, RX** only. Leave **3.3V, PA9, DP, DM** open (programming / USB upgrade). Do not power the radar from the 3.3V pad. UART is 3.3 V TTL; baud **256000** 8N1.
 
-Do **not** use `RX0`/`TX0` (USB serial). Baud **256000** 8N1.
+The **TX wiring** (ESP → Sensor RX) is needed for live tuning from the Python tool. Tracking alone can leave TX unconnected. Do **not** use `RX0`/`TX0` (USB serial).
 
 ### Mount-height potentiometer
 
