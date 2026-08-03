@@ -75,8 +75,8 @@
 /* ── Software-side target filters ────────────────────────────────── */
 
 #define CFG_FILTER_MIN_SPEED_CM_S   0   /* |speed| below this → ghost (0=off)*/
-#define CFG_FILTER_MIN_DIST_MM    100   /* closer than this → phantom         */
-#define CFG_FILTER_MAX_DIST_MM   4000   /* farther than this → noise          */
+#define CFG_FILTER_MIN_DIST_MM    400   /* closer than this → phantom         */
+#define CFG_FILTER_MAX_DIST_MM   6000   /* farther than this → noise          */
 #define CFG_FILTER_PERSIST_FRAMES   2   /* must appear N of last 3 frames     */
 
 /* ── Mux pins (multi backend; reserved for 74HC4051) ─────────────── */

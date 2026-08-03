@@ -444,8 +444,8 @@ def run_replay(frames, speed):
 
 SLIDER_DEFS = [
     ("min_speed",   0,    50,    0, "%d",   "Min speed (cm/s)"),
-    ("min_dist",    0,   500,  100, "%d",   "Min distance (mm)"),
-    ("max_dist",  500,  6000, 4000, "%d",   "Max distance (mm)"),
+    ("min_dist",    0,   500,  400, "%d",   "Min distance (mm)"),
+    ("max_dist",  500,  6000, 6000, "%d",   "Max distance (mm)"),
     ("persist",     1,     3,    2, "%d",   "Persist (frames)"),
 ]
 
