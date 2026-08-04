@@ -14,23 +14,34 @@
 
 #pragma once
 
+#include <cstdint>
+#include <span>
+
 #include "esp_err.h"
 #include "esp_lcd_panel_ops.h"
-#include <stdbool.h>
-#include <stdint.h>
 
-#ifdef __cplusplus
-extern "C"
+#include "config.h"
+
+class Display
 {
-#endif
+  public:
+    esp_err_t init();
 
-    esp_err_t display_init(void);
+    esp_lcd_panel_handle_t left() const { return left_; }
+    esp_lcd_panel_handle_t right() const { return right_; }
 
-    esp_lcd_panel_handle_t display_get_panel_left(void);
-    esp_lcd_panel_handle_t display_get_panel_right(void);
+    void fill(esp_lcd_panel_handle_t panel, uint16_t color);
 
-    void display_fill(esp_lcd_panel_handle_t panel, uint16_t color);
+    std::span<uint16_t, cfg::lcd::h_res> scanline_buf() { return dma_line_; }
 
-#ifdef __cplusplus
-}
-#endif
+  private:
+    esp_lcd_panel_handle_t left_{};
+    esp_lcd_panel_handle_t right_{};
+
+    alignas(4) uint16_t dma_line_[cfg::lcd::h_res]{};
+
+    static esp_err_t apply_rotation(esp_lcd_panel_handle_t panel, int deg);
+    esp_err_t create_panel(spi_host_device_t host, int cs_gpio, int rotation_deg,
+                           esp_lcd_panel_handle_t *out);
+    static esp_err_t pulse_shared_reset();
+};

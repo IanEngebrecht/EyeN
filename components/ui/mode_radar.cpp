@@ -14,44 +14,46 @@
 
 #include "mode.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <string.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <numbers>
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 
 #include "config.h"
-#include "display.h"
 
 static const char *TAG = "mode_radar";
 
-/* ── Colors (RGB565, byte-swapped for little-endian SPI) ─────────── */
-
-#define COLOR_BLACK        0x0000
-#define SWAP16(c)          ((uint16_t)(((c) >> 8) | ((c) << 8)))
-#define COLOR_GREEN_BRIGHT SWAP16(0x07E0)
-#define COLOR_GREEN_DIM    SWAP16(0x0320)
-#define COLOR_GREEN_FAINT  SWAP16(0x0160)
-
-static inline uint16_t green_intensity(uint8_t level)
+namespace
 {
-    uint16_t g = ((uint16_t)level * 63) / 255;
-    uint16_t rgb565 = (g << 5);
-    return SWAP16(rgb565);
+
+constexpr uint16_t color_black = 0x0000;
+
+constexpr uint16_t swap16(uint16_t c)
+{
+    return static_cast<uint16_t>((c >> 8) | (c << 8));
 }
 
-/* ── Embedded 6x8 bitmap font (ASCII 32–126) ─────────────────────── */
+constexpr uint16_t color_green_bright = swap16(0x07E0);
+constexpr uint16_t color_green_dim = swap16(0x0320);
+constexpr uint16_t color_green_faint = swap16(0x0160);
 
-#define FONT_W     6
-#define FONT_H     8
-#define FONT_FIRST 32
-#define FONT_LAST  126
+inline uint16_t green_intensity(uint8_t level)
+{
+    uint16_t g = (static_cast<uint16_t>(level) * 63) / 255;
+    uint16_t rgb565 = g << 5;
+    return swap16(rgb565);
+}
 
-static const uint8_t font_6x8[] = {
-    /* Each char is 6 bytes; each byte is a column, LSB=top row.
-       Classic 5x7 in a 6x8 cell (6th col always 0). */
+constexpr int font_w = 6;
+constexpr int font_h = 8;
+constexpr int font_first = 32;
+constexpr int font_last = 126;
+
+constexpr uint8_t font_6x8[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, /*   */
     0x00, 0x00, 0x5F, 0x00, 0x00, 0x00, /* ! */
     0x00, 0x07, 0x00, 0x07, 0x00, 0x00, /* " */
@@ -149,98 +151,15 @@ static const uint8_t font_6x8[] = {
     0x08, 0x08, 0x2A, 0x1C, 0x08, 0x00, /* ~ */
 };
 
-static void draw_char(esp_lcd_panel_handle_t panel, int cx, int cy, char ch, uint16_t color,
-                      uint16_t bg, int scale)
-{
-    if (ch < FONT_FIRST || ch > FONT_LAST)
-        ch = ' ';
-    const uint8_t *glyph = &font_6x8[(ch - FONT_FIRST) * FONT_W];
-    const int pw = FONT_W * scale;
+constexpr float deg2rad = std::numbers::pi_v<float> / 180.0f;
+constexpr int sweep_radius = 110;
+constexpr int center_x = 120;
+constexpr int center_y = 120;
+constexpr float fov_center_deg = 90.0f;
+constexpr float fov_half_deg = 60.0f;
+constexpr int tail_lut_len = 24;
 
-    uint16_t *row =
-        static_cast<uint16_t *>(heap_caps_malloc((size_t)pw * sizeof(uint16_t), MALLOC_CAP_DMA));
-    if (!row)
-        return;
-
-    for (int r = 0; r < FONT_H; ++r)
-    {
-        for (int c = 0; c < FONT_W; ++c)
-        {
-            uint16_t pix = (glyph[c] & (1 << r)) ? color : bg;
-            for (int s = 0; s < scale; ++s)
-                row[c * scale + s] = pix;
-        }
-        int py = cy + r * scale;
-        for (int s = 0; s < scale; ++s)
-        {
-            if (py + s >= 0 && py + s < CFG_LCD_V_RES)
-            {
-                int ex = cx + pw;
-                if (ex > CFG_LCD_H_RES)
-                    ex = CFG_LCD_H_RES;
-                if (cx >= 0 && cx < CFG_LCD_H_RES)
-                    esp_lcd_panel_draw_bitmap(panel, cx, py + s, ex, py + s + 1, row);
-            }
-        }
-    }
-    free(row);
-}
-
-static void draw_string(esp_lcd_panel_handle_t panel, int x, int y, const char *str, uint16_t color,
-                        uint16_t bg, int scale)
-{
-    while (*str)
-    {
-        draw_char(panel, x, y, *str, color, bg, scale);
-        x += FONT_W * scale;
-        str++;
-    }
-}
-
-/* ── Radar sweep state ───────────────────────────────────────────── */
-
-#define PI_F    3.14159265f
-#define DEG2RAD (PI_F / 180.0f)
-
-#define SWEEP_RADIUS 110
-#define CENTER_X     120
-#define CENTER_Y     120
-
-/* FOV wedge: 120° centered pointing down (90° in screen coords = +Y) */
-#define FOV_CENTER_DEG 90.0f
-#define FOV_HALF_DEG   60.0f
-
-/* Sweep tail length in 0‥255 LUT angle units (~34°) */
-#define TAIL_LUT_LEN 24
-
-static esp_lcd_panel_handle_t s_left;
-static esp_lcd_panel_handle_t s_right;
-
-typedef struct
-{
-    bool active;
-    float angle_deg;     /* screen angle of target */
-    float norm_dist;     /* 0‥1 normalized distance */
-    int64_t lit_time_us; /* when sweep last passed */
-    int16_t x_mm, y_mm;
-    uint16_t distance_mm;
-    int16_t speed_cm_s;
-} radar_target_t;
-
-static radar_target_t s_targets[MODE_MAX_TARGETS];
-static int64_t s_sweep_start_us;
-static float s_last_sweep_deg;
-static uint32_t s_last_render_frame;
-
-static float sweep_angle_now(void)
-{
-    int64_t elapsed = esp_timer_get_time() - s_sweep_start_us;
-    float frac = (float)(elapsed % ((int64_t)CFG_RADAR_SWEEP_MS * 1000)) /
-                 (float)((int64_t)CFG_RADAR_SWEEP_MS * 1000);
-    return frac * 360.0f;
-}
-
-static float angle_diff(float a, float b)
+float angle_diff(float a, float b)
 {
     float d = a - b;
     while (d > 180.0f)
@@ -250,271 +169,304 @@ static float angle_diff(float a, float b)
     return d;
 }
 
-static void map_target_to_screen(const ld2450_target_t *t, float *out_angle, float *out_norm)
+void map_target_to_screen(const Target &t, float &out_angle, float &out_norm)
 {
-    /* LD2450 coords: x_mm (lateral, + right), y_mm (forward, + away).
-       Screen: 270° is straight down (away from sensor). Looking down at the
-       scene, targets further away map toward the rim, closer toward center. */
-    float az_rad = atan2f((float)t->x_mm, (float)t->y_mm);
-    float az_deg = az_rad * (180.0f / PI_F);
-    *out_angle = FOV_CENTER_DEG + az_deg;
+    float az_rad = std::atan2(static_cast<float>(t.x_mm), static_cast<float>(t.y_mm));
+    float az_deg = az_rad * (180.0f / std::numbers::pi_v<float>);
+    out_angle = fov_center_deg + az_deg;
 
-    float dist = (float)t->distance_mm;
-    float min_d = (float)CFG_FILTER_MIN_DIST_MM;
-    float max_d = (float)CFG_FILTER_MAX_DIST_MM;
+    float dist = static_cast<float>(t.distance_mm);
+    float min_d = static_cast<float>(cfg::filter::min_dist_mm);
+    float max_d = static_cast<float>(cfg::filter::max_dist_mm);
     if (max_d <= min_d)
         max_d = min_d + 1.0f;
-    *out_norm = (dist - min_d) / (max_d - min_d);
-    if (*out_norm < 0.0f)
-        *out_norm = 0.0f;
-    if (*out_norm > 1.0f)
-        *out_norm = 1.0f;
+    out_norm = (dist - min_d) / (max_d - min_d);
+    if (out_norm < 0.0f)
+        out_norm = 0.0f;
+    if (out_norm > 1.0f)
+        out_norm = 1.0f;
 }
 
-/* ── Left eye: PPI render (partial update) ───────────────────────── */
-
-/* Pre-computed pixel screen position → polar coords (avoids per-frame trig) */
-static uint8_t s_dist_lut[CFG_LCD_V_RES][CFG_LCD_H_RES]; /* distance 0‥SWEEP_RADIUS scaled to 0‥255,
-                                                            0 if outside */
-static uint8_t s_ang_lut[CFG_LCD_V_RES][CFG_LCD_H_RES]; /* angle 0‥255 mapping 0‥360° */
-
-static void build_luts(void)
+uint8_t deg_to_lut(float deg)
 {
-    for (int y = 0; y < CFG_LCD_V_RES; ++y)
+    float norm = deg / 360.0f;
+    norm -= std::floor(norm);
+    return static_cast<uint8_t>(norm * 255.0f);
+}
+
+uint8_t ang_diff_lut(uint8_t a, uint8_t b)
+{
+    int d = static_cast<int>(a) - static_cast<int>(b);
+    if (d < 0)
+        d += 256;
+    return static_cast<uint8_t>(d);
+}
+
+} // anonymous namespace
+
+class RadarMode : public DisplayMode
+{
+  public:
+    const char *name() const override { return "radar"; }
+    void enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right) override;
+    void render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
+                const ModeFrame &frame) override;
+    void leave() override;
+
+  private:
+    struct RadarTarget
     {
-        for (int x = 0; x < CFG_LCD_H_RES; ++x)
+        bool active{};
+        float angle_deg{};
+        float norm_dist{};
+        int64_t lit_time_us{};
+        int16_t x_mm{}, y_mm{};
+        uint16_t distance_mm{};
+        int16_t speed_cm_s{};
+    };
+
+    esp_lcd_panel_handle_t left_{};
+    esp_lcd_panel_handle_t right_{};
+    RadarTarget targets_[Ld2450::target_count]{};
+    int64_t sweep_start_us_{};
+    float last_sweep_deg_{};
+    uint32_t last_render_frame_{};
+    char prev_lines_[7][20]{};
+
+    uint8_t dist_lut_[cfg::lcd::v_res][cfg::lcd::h_res]{};
+    uint8_t ang_lut_[cfg::lcd::v_res][cfg::lcd::h_res]{};
+
+    alignas(4) uint16_t dma_line_[cfg::lcd::h_res]{};
+
+    float sweep_angle_now() const;
+    void build_luts();
+    void fill_panel(esp_lcd_panel_handle_t panel, uint16_t color);
+    void draw_static_grid();
+    void update_targets(const ModeFrame &frame, float sweep_deg);
+    void render_left();
+    void render_right(const ModeFrame &frame);
+    void draw_char(esp_lcd_panel_handle_t panel, int cx, int cy, char ch, uint16_t color,
+                   uint16_t bg, int scale);
+    void draw_string(esp_lcd_panel_handle_t panel, int x, int y, const char *str, uint16_t color,
+                     uint16_t bg, int scale);
+};
+
+float RadarMode::sweep_angle_now() const
+{
+    int64_t elapsed = esp_timer_get_time() - sweep_start_us_;
+    float frac = static_cast<float>(elapsed % (static_cast<int64_t>(cfg::sweep::ms) * 1000)) /
+                 static_cast<float>(static_cast<int64_t>(cfg::sweep::ms) * 1000);
+    return frac * 360.0f;
+}
+
+void RadarMode::fill_panel(esp_lcd_panel_handle_t panel, uint16_t color)
+{
+    std::fill(std::begin(dma_line_), std::end(dma_line_), color);
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
+        esp_lcd_panel_draw_bitmap(panel, 0, y, cfg::lcd::h_res, y + 1, dma_line_);
+}
+
+void RadarMode::build_luts()
+{
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
+    {
+        for (int x = 0; x < cfg::lcd::h_res; ++x)
         {
-            float dx = (float)(x - CENTER_X);
-            float dy = (float)(y - CENTER_Y);
-            float d = sqrtf(dx * dx + dy * dy);
-            if (d > (float)SWEEP_RADIUS)
+            float dx = static_cast<float>(x - center_x);
+            float dy = static_cast<float>(y - center_y);
+            float d = std::sqrt(dx * dx + dy * dy);
+            if (d > static_cast<float>(sweep_radius))
             {
-                s_dist_lut[y][x] = 0;
-                s_ang_lut[y][x] = 0;
+                dist_lut_[y][x] = 0;
+                ang_lut_[y][x] = 0;
             }
             else
             {
-                s_dist_lut[y][x] = (uint8_t)((d / (float)SWEEP_RADIUS) * 254.0f) + 1;
-                float ang = atan2f(dy, dx);
+                dist_lut_[y][x] =
+                    static_cast<uint8_t>((d / static_cast<float>(sweep_radius)) * 254.0f) + 1;
+                float ang = std::atan2(dy, dx);
                 if (ang < 0.0f)
-                    ang += 2.0f * PI_F;
-                s_ang_lut[y][x] = (uint8_t)(ang / (2.0f * PI_F) * 255.0f);
+                    ang += 2.0f * std::numbers::pi_v<float>;
+                ang_lut_[y][x] =
+                    static_cast<uint8_t>(ang / (2.0f * std::numbers::pi_v<float>)*255.0f);
             }
         }
     }
 }
 
-static void draw_static_grid(void)
+void RadarMode::draw_static_grid()
 {
-    uint16_t *row =
-        static_cast<uint16_t *>(heap_caps_malloc(CFG_LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA));
-    if (!row)
-        return;
+    const float fov_lo_rad = (fov_center_deg - fov_half_deg) * deg2rad;
+    const float fov_hi_rad = (fov_center_deg + fov_half_deg) * deg2rad;
+    const float lo_dx = std::cos(fov_lo_rad), lo_dy = std::sin(fov_lo_rad);
+    const float hi_dx = std::cos(fov_hi_rad), hi_dy = std::sin(fov_hi_rad);
+    const float ring1 = sweep_radius / 3.0f;
+    const float ring2 = sweep_radius * 2.0f / 3.0f;
+    const float ring3 = static_cast<float>(sweep_radius);
 
-    /* FOV boundary directions (same cos/sin space as dot placement) */
-    const float fov_lo_rad = (FOV_CENTER_DEG - FOV_HALF_DEG) * DEG2RAD;
-    const float fov_hi_rad = (FOV_CENTER_DEG + FOV_HALF_DEG) * DEG2RAD;
-    const float lo_dx = cosf(fov_lo_rad), lo_dy = sinf(fov_lo_rad);
-    const float hi_dx = cosf(fov_hi_rad), hi_dy = sinf(fov_hi_rad);
-    const float ring1 = SWEEP_RADIUS / 3.0f;
-    const float ring2 = SWEEP_RADIUS * 2.0f / 3.0f;
-    const float ring3 = (float)SWEEP_RADIUS;
-
-    for (int y = 0; y < CFG_LCD_V_RES; ++y)
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
     {
-        for (int x = 0; x < CFG_LCD_H_RES; ++x)
+        for (int x = 0; x < cfg::lcd::h_res; ++x)
         {
-            uint16_t pix = COLOR_BLACK;
-            if (s_dist_lut[y][x] > 0)
+            uint16_t pix = color_black;
+            if (dist_lut_[y][x] > 0)
             {
-                float px = (float)(x - CENTER_X);
-                float py = (float)(y - CENTER_Y);
-                float dist = (float)(s_dist_lut[y][x] - 1) / 254.0f * (float)SWEEP_RADIUS;
+                float px = static_cast<float>(x - center_x);
+                float py = static_cast<float>(y - center_y);
+                float dist = static_cast<float>(dist_lut_[y][x] - 1) / 254.0f *
+                             static_cast<float>(sweep_radius);
 
-                /* FOV boundary lines: distance from pixel to each boundary ray */
                 if (dist > 5.0f)
                 {
-                    float cross_lo = fabsf(px * lo_dy - py * lo_dx);
+                    float cross_lo = std::fabs(px * lo_dy - py * lo_dx);
                     float dot_lo = px * lo_dx + py * lo_dy;
                     if (cross_lo < 1.5f && dot_lo > 0.0f)
-                        pix = COLOR_GREEN_DIM;
+                        pix = color_green_dim;
 
-                    float cross_hi = fabsf(px * hi_dy - py * hi_dx);
+                    float cross_hi = std::fabs(px * hi_dy - py * hi_dx);
                     float dot_hi = px * hi_dx + py * hi_dy;
                     if (cross_hi < 1.5f && dot_hi > 0.0f)
-                        pix = COLOR_GREEN_DIM;
+                        pix = color_green_dim;
                 }
 
-                /* Range rings */
-                if (fabsf(dist - ring1) < 1.2f || fabsf(dist - ring2) < 1.2f ||
-                    fabsf(dist - ring3) < 1.2f)
+                if (std::fabs(dist - ring1) < 1.2f || std::fabs(dist - ring2) < 1.2f ||
+                    std::fabs(dist - ring3) < 1.2f)
                 {
-                    if (pix == COLOR_BLACK)
-                        pix = COLOR_GREEN_FAINT;
+                    if (pix == color_black)
+                        pix = color_green_faint;
                 }
             }
-            row[x] = pix;
+            dma_line_[x] = pix;
         }
-        esp_lcd_panel_draw_bitmap(s_left, 0, y, CFG_LCD_H_RES, y + 1, row);
+        esp_lcd_panel_draw_bitmap(left_, 0, y, cfg::lcd::h_res, y + 1, dma_line_);
     }
-    free(row);
 }
 
-/* Convert degrees to the 0‥255 angle LUT space */
-static inline uint8_t deg_to_lut(float deg)
-{
-    float norm = deg / 360.0f;
-    norm -= floorf(norm);
-    return (uint8_t)(norm * 255.0f);
-}
-
-static inline uint8_t ang_diff_lut(uint8_t a, uint8_t b)
-{
-    int d = (int)a - (int)b;
-    if (d < 0)
-        d += 256;
-    return (uint8_t)d;
-}
-
-/* Update target state from a new radar frame */
-static void update_targets(const mode_frame_t *frame, float sweep_deg)
+void RadarMode::update_targets(const ModeFrame &frame, float sweep_deg)
 {
     const int64_t now_us = esp_timer_get_time();
-    for (int i = 0; i < MODE_MAX_TARGETS; ++i)
+    for (int i = 0; i < Ld2450::target_count; ++i)
     {
-        if (i < frame->target_count && frame->targets[i].valid)
+        if (i < frame.target_count && frame.targets[i].valid)
         {
             float ang, nd;
-            map_target_to_screen(&frame->targets[i], &ang, &nd);
-            /* Hard clamp: a target dot must never render outside the
-               120° FOV wedge, even if noisy azimuth briefly exceeds it. */
-            const float lo = FOV_CENTER_DEG - FOV_HALF_DEG;
-            const float hi = FOV_CENTER_DEG + FOV_HALF_DEG;
+            map_target_to_screen(frame.targets[i], ang, nd);
+            const float lo = fov_center_deg - fov_half_deg;
+            const float hi = fov_center_deg + fov_half_deg;
             if (ang < lo)
                 ang = lo;
             if (ang > hi)
                 ang = hi;
-            s_targets[i].active = true;
-            s_targets[i].angle_deg = ang;
-            s_targets[i].norm_dist = nd;
-            s_targets[i].x_mm = frame->targets[i].x_mm;
-            s_targets[i].y_mm = frame->targets[i].y_mm;
-            s_targets[i].distance_mm = frame->targets[i].distance_mm;
-            s_targets[i].speed_cm_s = frame->targets[i].speed_cm_s;
+            targets_[i].active = true;
+            targets_[i].angle_deg = ang;
+            targets_[i].norm_dist = nd;
+            targets_[i].x_mm = frame.targets[i].x_mm;
+            targets_[i].y_mm = frame.targets[i].y_mm;
+            targets_[i].distance_mm = frame.targets[i].distance_mm;
+            targets_[i].speed_cm_s = frame.targets[i].speed_cm_s;
 
             float d = angle_diff(sweep_deg, ang);
-            float d_prev = angle_diff(s_last_sweep_deg, ang);
+            float d_prev = angle_diff(last_sweep_deg_, ang);
             if (d >= 0.0f && d < 30.0f && d_prev < 0.0f)
             {
-                s_targets[i].lit_time_us = now_us;
+                targets_[i].lit_time_us = now_us;
             }
         }
         else
         {
-            s_targets[i].active = false;
+            targets_[i].active = false;
         }
     }
 }
 
-/* Full-circle render: recompute every pixel each frame.
-   The LUTs keep per-pixel cost to simple integer ops. */
-static void render_left(void)
+void RadarMode::render_left()
 {
     const float sweep_deg = sweep_angle_now();
     const int64_t now_us = esp_timer_get_time();
     uint8_t lut_sweep = deg_to_lut(sweep_deg);
 
-    /* Precompute target screen positions */
-    int tgt_x[MODE_MAX_TARGETS], tgt_y[MODE_MAX_TARGETS];
-    for (int i = 0; i < MODE_MAX_TARGETS; ++i)
+    int tgt_x[Ld2450::target_count], tgt_y[Ld2450::target_count];
+    for (int i = 0; i < Ld2450::target_count; ++i)
     {
-        if (!s_targets[i].active)
+        if (!targets_[i].active)
         {
             tgt_x[i] = -100;
             tgt_y[i] = -100;
             continue;
         }
-        float tang = s_targets[i].angle_deg * DEG2RAD;
-        float td = s_targets[i].norm_dist * (float)SWEEP_RADIUS;
-        tgt_x[i] = CENTER_X + (int)(cosf(tang) * td);
-        tgt_y[i] = CENTER_Y + (int)(sinf(tang) * td);
+        float tang = targets_[i].angle_deg * deg2rad;
+        float td = targets_[i].norm_dist * static_cast<float>(sweep_radius);
+        tgt_x[i] = center_x + static_cast<int>(std::cos(tang) * td);
+        tgt_y[i] = center_y + static_cast<int>(std::sin(tang) * td);
     }
 
-    uint16_t *row =
-        static_cast<uint16_t *>(heap_caps_malloc(CFG_LCD_H_RES * sizeof(uint16_t), MALLOC_CAP_DMA));
-    if (!row)
-        return;
+    const float fov_lo_rad = (fov_center_deg - fov_half_deg) * deg2rad;
+    const float fov_hi_rad = (fov_center_deg + fov_half_deg) * deg2rad;
+    const float lo_dx = std::cos(fov_lo_rad), lo_dy = std::sin(fov_lo_rad);
+    const float hi_dx = std::cos(fov_hi_rad), hi_dy = std::sin(fov_hi_rad);
+    const float ring1 = sweep_radius / 3.0f;
+    const float ring2 = sweep_radius * 2.0f / 3.0f;
+    const float ring3 = static_cast<float>(sweep_radius);
 
-    const float fov_lo_rad = (FOV_CENTER_DEG - FOV_HALF_DEG) * DEG2RAD;
-    const float fov_hi_rad = (FOV_CENTER_DEG + FOV_HALF_DEG) * DEG2RAD;
-    const float lo_dx = cosf(fov_lo_rad), lo_dy = sinf(fov_lo_rad);
-    const float hi_dx = cosf(fov_hi_rad), hi_dy = sinf(fov_hi_rad);
-    const float ring1 = SWEEP_RADIUS / 3.0f;
-    const float ring2 = SWEEP_RADIUS * 2.0f / 3.0f;
-    const float ring3 = (float)SWEEP_RADIUS;
-
-    for (int y = 0; y < CFG_LCD_V_RES; ++y)
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
     {
-        for (int x = 0; x < CFG_LCD_H_RES; ++x)
+        for (int x = 0; x < cfg::lcd::h_res; ++x)
         {
-            if (s_dist_lut[y][x] == 0)
+            if (dist_lut_[y][x] == 0)
             {
-                row[x] = COLOR_BLACK;
+                dma_line_[x] = color_black;
                 continue;
             }
 
-            uint8_t pa = s_ang_lut[y][x];
-            float dist = (float)(s_dist_lut[y][x] - 1) / 254.0f * (float)SWEEP_RADIUS;
-            uint16_t pix = COLOR_BLACK;
+            uint8_t pa = ang_lut_[y][x];
+            float dist =
+                static_cast<float>(dist_lut_[y][x] - 1) / 254.0f * static_cast<float>(sweep_radius);
+            uint16_t pix = color_black;
 
-            /* Sweep line (thin) and tail glow take priority over the grid,
-               so the gradient reads clean with no grid lines poking through. */
             uint8_t sweep_dist = ang_diff_lut(pa, lut_sweep);
             bool on_sweep = (sweep_dist <= 1 || sweep_dist >= 254) && dist > 3.0f;
 
             uint8_t behind = ang_diff_lut(lut_sweep, pa);
-            bool in_tail = behind > 0 && behind <= TAIL_LUT_LEN && dist > 3.0f;
+            bool in_tail = behind > 0 && behind <= tail_lut_len && dist > 3.0f;
 
             if (on_sweep)
             {
-                pix = COLOR_GREEN_BRIGHT;
+                pix = color_green_bright;
             }
             else if (in_tail)
             {
-                float frac = 1.0f - (float)behind / (float)(TAIL_LUT_LEN + 1);
-                pix = green_intensity((uint8_t)(frac * 255.0f));
+                float frac =
+                    1.0f - static_cast<float>(behind) / static_cast<float>(tail_lut_len + 1);
+                pix = green_intensity(static_cast<uint8_t>(frac * 255.0f));
             }
             else
             {
-                /* Grid: FOV boundary lines */
-                float px = (float)(x - CENTER_X);
-                float py = (float)(y - CENTER_Y);
+                float px = static_cast<float>(x - center_x);
+                float py = static_cast<float>(y - center_y);
                 if (dist > 5.0f)
                 {
-                    float cross_lo = fabsf(px * lo_dy - py * lo_dx);
+                    float cross_lo = std::fabs(px * lo_dy - py * lo_dx);
                     if (cross_lo < 1.5f && (px * lo_dx + py * lo_dy) > 0.0f)
-                        pix = COLOR_GREEN_DIM;
-                    float cross_hi = fabsf(px * hi_dy - py * hi_dx);
+                        pix = color_green_dim;
+                    float cross_hi = std::fabs(px * hi_dy - py * hi_dx);
                     if (cross_hi < 1.5f && (px * hi_dx + py * hi_dy) > 0.0f)
-                        pix = COLOR_GREEN_DIM;
+                        pix = color_green_dim;
                 }
 
-                /* Range rings */
-                if (fabsf(dist - ring1) < 1.2f || fabsf(dist - ring2) < 1.2f ||
-                    fabsf(dist - ring3) < 1.2f)
+                if (std::fabs(dist - ring1) < 1.2f || std::fabs(dist - ring2) < 1.2f ||
+                    std::fabs(dist - ring3) < 1.2f)
                 {
-                    if (pix == COLOR_BLACK)
-                        pix = COLOR_GREEN_FAINT;
+                    if (pix == color_black)
+                        pix = color_green_faint;
                 }
             }
 
-            row[x] = pix;
+            dma_line_[x] = pix;
         }
 
-        /* Overlay target dots */
-        for (int t = 0; t < MODE_MAX_TARGETS; ++t)
+        for (int t = 0; t < Ld2450::target_count; ++t)
         {
-            if (!s_targets[t].active)
+            if (!targets_[t].active)
                 continue;
             int dty = y - tgt_y[t];
             if (dty < -4 || dty > 4)
@@ -522,63 +474,103 @@ static void render_left(void)
             for (int dtx = -4; dtx <= 4; ++dtx)
             {
                 int bx = tgt_x[t] + dtx;
-                if (bx < 0 || bx >= CFG_LCD_H_RES)
+                if (bx < 0 || bx >= cfg::lcd::h_res)
                     continue;
                 if (dtx * dtx + dty * dty <= 16)
                 {
-                    int64_t age = now_us - s_targets[t].lit_time_us;
-                    float age_frac = (float)age / (float)((int64_t)CFG_RADAR_SWEEP_MS * 1000);
+                    int64_t age = now_us - targets_[t].lit_time_us;
+                    float age_frac =
+                        static_cast<float>(age) /
+                        static_cast<float>(static_cast<int64_t>(cfg::sweep::ms) * 1000);
                     if (age_frac > 1.0f)
                         age_frac = 1.0f;
-                    uint8_t bright = (uint8_t)(255.0f * (1.0f - age_frac * 0.85f));
+                    uint8_t bright = static_cast<uint8_t>(255.0f * (1.0f - age_frac * 0.85f));
                     uint16_t c = green_intensity(bright);
-                    if (c > row[bx])
-                        row[bx] = c;
+                    if (c > dma_line_[bx])
+                        dma_line_[bx] = c;
                 }
             }
         }
 
-        esp_lcd_panel_draw_bitmap(s_left, 0, y, CFG_LCD_H_RES, y + 1, row);
+        esp_lcd_panel_draw_bitmap(left_, 0, y, cfg::lcd::h_res, y + 1, dma_line_);
     }
 
-    s_last_sweep_deg = sweep_deg;
-    free(row);
+    last_sweep_deg_ = sweep_deg;
 }
 
-/* ── Right eye: target data readout (partial update) ─────────────── */
+void RadarMode::draw_char(esp_lcd_panel_handle_t panel, int cx, int cy, char ch, uint16_t color,
+                          uint16_t bg, int scale)
+{
+    if (ch < font_first || ch > font_last)
+        ch = ' ';
+    const uint8_t *glyph = &font_6x8[(ch - font_first) * font_w];
+    const int pw = font_w * scale;
 
-static void render_right(const mode_frame_t *frame)
+    for (int r = 0; r < font_h; ++r)
+    {
+        for (int c = 0; c < font_w; ++c)
+        {
+            uint16_t pix = (glyph[c] & (1 << r)) ? color : bg;
+            for (int s = 0; s < scale; ++s)
+                dma_line_[c * scale + s] = pix;
+        }
+        int py = cy + r * scale;
+        for (int s = 0; s < scale; ++s)
+        {
+            if (py + s >= 0 && py + s < cfg::lcd::v_res)
+            {
+                int ex = cx + pw;
+                if (ex > cfg::lcd::h_res)
+                    ex = cfg::lcd::h_res;
+                if (cx >= 0 && cx < cfg::lcd::h_res)
+                    esp_lcd_panel_draw_bitmap(panel, cx, py + s, ex, py + s + 1, dma_line_);
+            }
+        }
+    }
+}
+
+void RadarMode::draw_string(esp_lcd_panel_handle_t panel, int x, int y, const char *str,
+                            uint16_t color, uint16_t bg, int scale)
+{
+    while (*str)
+    {
+        draw_char(panel, x, y, *str, color, bg, scale);
+        x += font_w * scale;
+        str++;
+    }
+}
+
+void RadarMode::render_right(const ModeFrame &frame)
 {
     const int scale = 2;
-    const int char_w = FONT_W * scale;
-    const int line_h = FONT_H * scale + 4;
+    const int char_w = font_w * scale;
+    const int line_h = font_h * scale + 4;
     const int max_chars = 14;
     const int num_lines = 7;
     const int block_w = max_chars * char_w;
     const int block_h = num_lines * line_h;
-    const int x0 = (CFG_LCD_H_RES - block_w) / 2;
-    const int y0 = (CFG_LCD_V_RES - block_h) / 2;
+    const int x0 = (cfg::lcd::h_res - block_w) / 2;
+    const int y0 = (cfg::lcd::v_res - block_h) / 2;
 
     char lines[7][20];
     memset(lines, ' ', sizeof(lines));
 
-    if (frame->human && frame->primary_idx >= 0)
+    if (frame.human && frame.primary_idx >= 0)
     {
-        const ld2450_target_t *t = &frame->primary;
-        snprintf(lines[0], 19, "TGT %d/%d", frame->primary_idx + 1, frame->target_count);
+        const Target *t = &frame.primary;
+        snprintf(lines[0], 19, "TGT %d/%d", frame.primary_idx + 1, frame.target_count);
         snprintf(lines[1], 19, "--------");
-        snprintf(lines[2], 19, "X:  %5d mm", (int)t->x_mm);
-        snprintf(lines[3], 19, "Y:  %5d mm", (int)t->y_mm);
-        snprintf(lines[4], 19, "DST: %4u mm", (unsigned)t->distance_mm);
-        snprintf(lines[5], 19, "SPD: %4d cm/s", (int)t->speed_cm_s);
-        snprintf(lines[6], 19, "AZ:  %5.1f", (double)frame->azimuth_deg);
+        snprintf(lines[2], 19, "X:  %5d mm", static_cast<int>(t->x_mm));
+        snprintf(lines[3], 19, "Y:  %5d mm", static_cast<int>(t->y_mm));
+        snprintf(lines[4], 19, "DST: %4u mm", static_cast<unsigned>(t->distance_mm));
+        snprintf(lines[5], 19, "SPD: %4d cm/s", static_cast<int>(t->speed_cm_s));
+        snprintf(lines[6], 19, "AZ:  %5.1f", static_cast<double>(frame.azimuth_deg));
     }
     else
     {
         snprintf(lines[3], 19, "  NO TARGET");
     }
 
-    /* Pad all lines to max_chars and null-terminate */
     for (int i = 0; i < 7; ++i)
     {
         for (int j = 0; j < max_chars; ++j)
@@ -587,75 +579,65 @@ static void render_right(const mode_frame_t *frame)
         lines[i][max_chars] = '\0';
     }
 
-    /* Check against previous; only redraw changed lines */
-    static char s_prev_lines[7][20];
     for (int i = 0; i < 7; ++i)
     {
-        if (memcmp(lines[i], s_prev_lines[i], max_chars + 1) == 0)
+        if (memcmp(lines[i], prev_lines_[i], max_chars + 1) == 0)
             continue;
-        memcpy(s_prev_lines[i], lines[i], max_chars + 1);
-        draw_string(s_right, x0, y0 + i * line_h, lines[i], COLOR_GREEN_BRIGHT, COLOR_BLACK, scale);
+        memcpy(prev_lines_[i], lines[i], max_chars + 1);
+        draw_string(right_, x0, y0 + i * line_h, lines[i], color_green_bright, color_black, scale);
     }
 }
 
-/* ── Mode interface ──────────────────────────────────────────────── */
-
-static void radar_enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right)
+void RadarMode::enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right)
 {
-    s_left = left;
-    s_right = right;
-    s_sweep_start_us = esp_timer_get_time();
-    s_last_sweep_deg = 0.0f;
-    s_last_render_frame = 0;
-    memset(s_targets, 0, sizeof(s_targets));
+    left_ = left;
+    right_ = right;
+    sweep_start_us_ = esp_timer_get_time();
+    last_sweep_deg_ = 0.0f;
+    last_render_frame_ = 0;
+    for (auto &t : targets_)
+        t = {};
+    memset(prev_lines_, 0, sizeof(prev_lines_));
 
-    /* Left eye normally uses 90° (swap=true, mx=true, my=false) for the
-       eye-tracking mode. Add a vertical mirror so the FOV wedge/sweep
-       point toward the bottom of the physical display. */
-    esp_lcd_panel_swap_xy(s_left, true);
-    esp_lcd_panel_mirror(s_left, true, true);
+    esp_lcd_panel_swap_xy(left_, true);
+    esp_lcd_panel_mirror(left_, true, true);
 
-    /* Right eye normally uses 270° for paired-eye mirroring.
-       For independent text content, match standard orientation. */
-    esp_lcd_panel_swap_xy(s_right, true);
-    esp_lcd_panel_mirror(s_right, true, true);
+    esp_lcd_panel_swap_xy(right_, true);
+    esp_lcd_panel_mirror(right_, true, true);
 
     build_luts();
-    display_fill(s_left, COLOR_BLACK);
+    fill_panel(left_, color_black);
     draw_static_grid();
-    display_fill(s_right, COLOR_BLACK);
+    fill_panel(right_, color_black);
 
     ESP_LOGI(TAG, "entered radar mode");
 }
 
-static void radar_render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
-                         const mode_frame_t *frame)
+void RadarMode::render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
+                       const ModeFrame &frame)
 {
     (void)left;
     (void)right;
-    if (frame->frame_id == s_last_render_frame)
+    if (frame.frame_id == last_render_frame_)
         return;
-    s_last_render_frame = frame->frame_id;
+    last_render_frame_ = frame.frame_id;
 
     update_targets(frame, sweep_angle_now());
     render_left();
     render_right(frame);
 }
 
-static void radar_leave(void)
+void RadarMode::leave()
 {
-    /* Restore left eye to plain 90° for eye-tracking mode */
-    esp_lcd_panel_swap_xy(s_left, true);
-    esp_lcd_panel_mirror(s_left, true, false);
+    esp_lcd_panel_swap_xy(left_, true);
+    esp_lcd_panel_mirror(left_, true, false);
 
-    /* Restore right eye to 270° for paired-eye mode */
-    esp_lcd_panel_swap_xy(s_right, true);
-    esp_lcd_panel_mirror(s_right, false, true);
+    esp_lcd_panel_swap_xy(right_, true);
+    esp_lcd_panel_mirror(right_, false, true);
 }
 
-const display_mode_t mode_radar = {
-    .name = "radar",
-    .enter = radar_enter,
-    .render = radar_render,
-    .leave = radar_leave,
-};
+DisplayMode &radar_mode()
+{
+    static RadarMode instance;
+    return instance;
+}
