@@ -10,7 +10,7 @@ Silk labels:
 
 ## Wiring
 
-Working prototype pinout (matches `main/config.h`). Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
+Working prototype pinout (matches `components/config/include/config.h`). Common **GND**. Displays → **3V3**. Radar → **VIN** (~5V when USB-powered).
 
 ### Net diagram
 
@@ -98,7 +98,7 @@ Press the button on **D19** to cycle. Current modes:
    - *Left eye:* rotating PPI sweep over a 120° FOV wedge with range rings. Targets light up green when the sweep passes and fade back to black.
    - *Right eye:* monospace data readout of the currently tracked target (X, Y, distance, speed, azimuth).
 
-Adding modes: create a new `main/mode_*.c`, implement the `display_mode_t` interface from `main/mode.h`, and register it in the `s_modes[]` table in `main/main.c`.
+Adding modes: create a new `components/ui/mode_*.cpp`, implement the `display_mode_t` interface from `components/ui/include/mode.h`, and register it in the `s_modes[]` table in `main/main.cpp`.
 
 ## Vertical estimate (single sensor)
 
@@ -143,10 +143,10 @@ Settings persist across power cycles on the LD2450.
 
 ## Restoring multi-sensor (pitch stack)
 
-The pitch-stacked fusion lives in `main/radar_stack_multi.c` but is **not linked** by default.
+The pitch-stacked fusion lives in `components/radar/radar_stack_multi.cpp` but is **not linked** by default.
 
-1. In [`main/CMakeLists.txt`](main/CMakeLists.txt), set `RADAR_SRC` to `radar_stack_multi.c`.
-2. In [`main/config.h`](main/config.h), restore the commented two-row `CFG_SENSORS` (lower ~−20°, upper ~+20° on UART2 + UART1).
+1. In [`components/radar/CMakeLists.txt`](components/radar/CMakeLists.txt), set `RADAR_SRC` to `radar_stack_multi.cpp`.
+2. In [`components/config/include/config.h`](components/config/include/config.h), restore the commented two-row `CFG_SENSORS` (lower ~−20°, upper ~+20° on UART2 + UART1).
 3. Rebuild. Vertical then comes from visibility bands again; the potentiometer is unused in that build.
 
 Optional later: third (mid) sensor + 74HC4051 — multi code already has `mux_channel` hooks.
