@@ -18,169 +18,185 @@
  *
  * This is the single file to edit when changing hardware layout, sensor
  * placement, or tuning parameters.  Rebuild after changes:  idf.py build
- *
- * Radar backend is chosen in components/radar/CMakeLists.txt (RADAR_SRC):
- *   radar_stack_single.cpp  – default: one LD2450 + pot vertical
- *   radar_stack_multi.cpp   – pitch-stacked N-sensor fusion (archived)
  */
 
+#include <array>
+
+#include "driver/spi_master.h"
 #include "driver/uart.h"
-#include <stdbool.h>
+#include "hal/adc_types.h"
 
-#ifdef __cplusplus
-extern "C"
+namespace cfg
 {
-#endif
 
-    /* ── Display (dual GC9A01 on shared SPI bus) ─────────────────────── */
+/* ── Display (dual GC9A01 on shared SPI bus) ─────────────────────── */
 
-#define CFG_LCD_SCLK     18
-#define CFG_LCD_MOSI     23
-#define CFG_LCD_DC       4
-#define CFG_LCD_RST      27
-#define CFG_LCD_CS_LEFT  5
-#define CFG_LCD_CS_RIGHT 15
-#define CFG_LCD_SPI_HOST SPI2_HOST
-#define CFG_LCD_H_RES    240
-#define CFG_LCD_V_RES    240
-#define CFG_LCD_SPI_HZ   (40 * 1000 * 1000)
+namespace lcd
+{
+inline constexpr int sclk = 18;
+inline constexpr int mosi = 23;
+inline constexpr int dc = 4;
+inline constexpr int rst = 27;
+inline constexpr int cs_left = 5;
+inline constexpr int cs_right = 15;
+inline constexpr auto spi_host = SPI2_HOST;
+inline constexpr int h_res = 240;
+inline constexpr int v_res = 240;
+inline constexpr int spi_hz = 40'000'000;
 
 /*
  * Panel rotation in degrees clockwise (0 / 90 / 180 / 270).
  * Round GC9A01 modules often have the flex on the outer edge of each
- * eye — use opposite 90°/270° so software “up” is world up on both.
+ * eye — use opposite 90°/270° so software "up" is world up on both.
  * If gaze still feels wrong, try swapping the two values, or 0/180.
  */
-#define CFG_LCD_LEFT_ROTATION_DEG  90
-#define CFG_LCD_RIGHT_ROTATION_DEG 270
+inline constexpr int left_rotation_deg = 90;
+inline constexpr int right_rotation_deg = 270;
+} // namespace lcd
 
-    /* ── Pupil / eye appearance ──────────────────────────────────────── */
+/* ── Pupil / eye appearance ──────────────────────────────────────── */
 
-#define CFG_DOT_RADIUS_MIN       30    /* pupil at ≥ far range (px)         */
-#define CFG_DOT_RADIUS_MAX       55    /* pupil when close (px)             */
-#define CFG_DOT_NEAR_MM          400   /* distance → max radius             */
-#define CFG_DOT_FAR_MM           3000  /* ≥3 m → min radius (no further shrink) */
-#define CFG_GAZE_MAX_DEG         50.0f /* ±degrees mapped to screen edge    */
-#define CFG_GAZE_AZ_DEADBAND_DEG 1.5f  /* ignore azimuth jitter below this  */
-#define CFG_GAZE_COAST_MAX_DEG   6.0f  /* max coast away from last fix      */
+namespace dot
+{
+inline constexpr int radius_min = 30; /* pupil at ≥ far range (px)         */
+inline constexpr int radius_max = 55; /* pupil when close (px)             */
+inline constexpr int near_mm = 400;   /* distance → max radius             */
+inline constexpr int far_mm = 3000;   /* ≥3 m → min radius (no further shrink) */
+} // namespace dot
+
+namespace gaze
+{
+inline constexpr float max_deg = 50.0f;        /* ±degrees mapped to screen edge    */
+inline constexpr float az_deadband_deg = 1.5f; /* ignore azimuth jitter below this  */
+inline constexpr float coast_max_deg = 6.0f;   /* max coast away from last fix      */
 
 /* Multi-person gaze (2–3 targets): dwell then rotate; motion steals focus */
-#define CFG_GAZE_HOLD_MIN_MS    2000 /* random hold lower bound           */
-#define CFG_GAZE_HOLD_MAX_MS    5000 /* random hold upper bound           */
-#define CFG_GAZE_MOTION_CM_S    15   /* |speed| ≥ this → moving (steal)   */
-#define CFG_GAZE_MOTION_LOCK_MS 2000 /* min ms on a mover before another can steal */
+inline constexpr int hold_min_ms = 2000;    /* random hold lower bound           */
+inline constexpr int hold_max_ms = 5000;    /* random hold upper bound           */
+inline constexpr int motion_cm_s = 15;      /* |speed| ≥ this → moving (steal)   */
+inline constexpr int motion_lock_ms = 2000; /* min ms on a mover before another can steal */
+} // namespace gaze
 
-    /* ── Radar (LD2450) common ───────────────────────────────────────── */
+/* ── Radar (LD2450) common ───────────────────────────────────────── */
 
-#define CFG_RADAR_BAUD 256000
+namespace radar
+{
+inline constexpr int baud = 256000;
+} // namespace radar
 
-    /* ── Animation / smoothing ───────────────────────────────────────── */
+/* ── Animation / smoothing ───────────────────────────────────────── */
 
-#define CFG_SMOOTH_H 0.60f /* horizontal lerp factor (0‥1)      */
-#define CFG_SMOOTH_V 0.40f /* vertical lerp factor  (0‥1)      */
-#define CFG_SMOOTH_R 0.30f /* pupil radius lerp factor (0‥1)    */
-                           /*   smaller = smoother / laggier    */
-                           /*   1.0 = no smoothing (instant)    */
+namespace smooth
+{
+inline constexpr float h = 0.60f; /* horizontal lerp factor (0‥1)      */
+inline constexpr float v = 0.40f; /* vertical lerp factor  (0‥1)      */
+inline constexpr float r = 0.30f; /* pupil radius lerp factor (0‥1)    */
+                                  /*   smaller = smoother / laggier    */
+                                  /*   1.0 = no smoothing (instant)    */
+} // namespace smooth
 
-    /* ── Radar frame / filter tuning ─────────────────────────────────── */
+/* ── Radar frame / filter tuning ─────────────────────────────────── */
 
-#define CFG_FRAME_TIMEOUT_MS                                                                       \
-    100                  /* sensor outputs 10 Hz, so ~100ms between frames;                        \
-                           long timeout to avoid missing queued frames in buffer */
-#define CFG_STALE_MS 500 /* drop a sensor's data after this   */
+namespace frame
+{
+/* sensor outputs 10 Hz, so ~100ms between frames;
+   long timeout to avoid missing queued frames in buffer */
+inline constexpr int timeout_ms = 100;
+inline constexpr int stale_ms = 500; /* drop a sensor's data after this   */
+} // namespace frame
 
-/* Multi-backend association (used only by radar_stack_multi.c) */
-#define CFG_ASSOC_MAX_DX_MM    400
-#define CFG_ASSOC_MAX_DDIST_MM 500
+/* ── Software-side target filters ────────────────────────────────── */
 
-    /* ── Software-side target filters ────────────────────────────────── */
+namespace filter
+{
+inline constexpr int min_speed_cm_s = 0; /* |speed| below this → ghost (0=off)*/
+inline constexpr int min_dist_mm = 400;  /* closer than this → phantom         */
+inline constexpr int max_dist_mm = 6000; /* farther than this → noise          */
+inline constexpr int persist_frames = 2; /* must appear N of last 3 frames     */
+} // namespace filter
 
-#define CFG_FILTER_MIN_SPEED_CM_S 0    /* |speed| below this → ghost (0=off)*/
-#define CFG_FILTER_MIN_DIST_MM    400  /* closer than this → phantom         */
-#define CFG_FILTER_MAX_DIST_MM    6000 /* farther than this → noise          */
-#define CFG_FILTER_PERSIST_FRAMES 2    /* must appear N of last 3 frames     */
+/* ── Mux pins (reserved for 74HC4051) ────────────────────────────── */
 
-    /* ── Mux pins (multi backend; reserved for 74HC4051) ─────────────── */
+namespace mux
+{
+inline constexpr int s0_gpio = -1;
+inline constexpr int s1_gpio = -1;
+} // namespace mux
 
-#define CFG_MUX_S0_GPIO -1
-#define CFG_MUX_S1_GPIO -1
+/* ── Mode button ─────────────────────────────────────────────────── */
 
-    /* ── Mode button ─────────────────────────────────────────────────── */
+namespace button
+{
+inline constexpr int gpio = 19; /* pull-up; button shorts to GND     */
+inline constexpr int debounce_ms = 200;
+} // namespace button
 
-#define CFG_BUTTON_GPIO        19 /* pull-up; button shorts to GND     */
-#define CFG_BUTTON_DEBOUNCE_MS 200
+/* ── Radar display mode ──────────────────────────────────────────── */
 
-    /* ── Radar display mode ──────────────────────────────────────────── */
+namespace sweep
+{
+inline constexpr int ms = 3000; /* one full sweep revolution (ms)    */
+} // namespace sweep
 
-#define CFG_RADAR_SWEEP_MS 3000 /* one full sweep revolution (ms)    */
+/* ── Single-sensor vertical: distance + potentiometer ────────────── *
+ *
+ * elevation = atan2(person_aim_mm - mount_height_mm, range_y_mm)
+ * Potentiometer maps ADC → mount_height_mm so eye-level vs floor
+ * placement is a dial, not a rebuild.
+ */
 
-    /* ── Single-sensor vertical: distance + potentiometer ────────────── *
-     *
-     * elevation = atan2(person_aim_mm - mount_height_mm, range_y_mm)
-     * Potentiometer maps ADC → mount_height_mm so eye-level vs floor
-     * placement is a dial, not a rebuild.
-     */
-
-#define CFG_POT_GPIO         34 /* ADC1 input-only                   */
-#define CFG_POT_ADC_UNIT     ADC_UNIT_1
-#define CFG_POT_ADC_CHANNEL  ADC_CHANNEL_6 /* GPIO34 on ESP32            */
-#define CFG_POT_ATTEN        ADC_ATTEN_DB_12
-#define CFG_POT_MOUNT_MIN_MM 0     /* pot at 0%  → sensor on floor      */
-#define CFG_POT_MOUNT_MAX_MM 2000  /* pot at 100% → sensor ~2 m up       */
-#define CFG_PERSON_AIM_MM    1500  /* assumed torso/face height (mm)     */
-#define CFG_POT_SMOOTH       0.15f /* ADC lerp factor (0‥1)             */
+namespace pot
+{
+inline constexpr int gpio = 34; /* ADC1 input-only                   */
+inline constexpr auto adc_unit = ADC_UNIT_1;
+inline constexpr auto adc_channel = ADC_CHANNEL_6; /* GPIO34 on ESP32 */
+inline constexpr auto atten = ADC_ATTEN_DB_12;
+inline constexpr int mount_min_mm = 0;     /* pot at 0%  → sensor on floor      */
+inline constexpr int mount_max_mm = 2000;  /* pot at 100% → sensor ~2 m up       */
+inline constexpr int person_aim_mm = 1500; /* assumed torso/face height (mm)     */
+inline constexpr float smooth = 0.15f;     /* ADC lerp factor (0‥1)             */
 
 /* Pot-as-mode-switch (temporary stand-in until a physical button is wired):
- * turning the pot to either end past CFG_POT_LIMIT_ENTER switches to radar
- * mode; turning it back past CFG_POT_LIMIT_EXIT (from either end) returns
- * to eye mode. The gap between ENTER/EXIT is hysteresis so the mode doesn't
+ * turning the pot to either end past limit_enter switches to radar
+ * mode; turning it back past limit_exit (from either end) returns
+ * to eye mode. The gap between enter/exit is hysteresis so the mode doesn't
  * chatter if the pot rests right at the threshold. */
-#define CFG_POT_LIMIT_ENTER 0.04f /* within this fraction of an end → radar mode */
-#define CFG_POT_LIMIT_EXIT  0.10f /* must move back in past this → eye mode */
+inline constexpr float limit_enter = 0.04f; /* within this fraction of an end → radar mode */
+inline constexpr float limit_exit = 0.10f;  /* must move back in past this → eye mode */
+} // namespace pot
 
-    /* ── Sensor array ────────────────────────────────────────────────── *
-     *
-     * Each row defines one LD2450 module.  Fields:
-     *
-     *   name        – label for log messages
-     *   uart_num    – ESP32 UART peripheral (UART_NUM_1 or UART_NUM_2)
-     *   rx_gpio     – ESP32 GPIO receiving the sensor's TX line
-     *   tx_gpio     – ESP32 GPIO to sensor RX, or -1 if not connected
-     *   pitch_deg   – physical tilt relative to horizon (positive = up)
-     *   inverted    – true if the module is mounted upside-down;
-     *                 this negates the X axis so left/right stay correct
-     *   mux_channel – analog-mux channel (>=0), or -1 for dedicated UART
-     *   enabled     – false to skip this sensor without removing the row
-     *
-     * Single backend uses the first enabled row only.
-     * Multi backend sorts by pitch; bands = 2 × enabled_count − 1.
-     */
+/* ── Sensor array ────────────────────────────────────────────────── *
+ *
+ * Each row defines one LD2450 module.  Fields:
+ *
+ *   name        – label for log messages
+ *   uart_num    – ESP32 UART peripheral (UART_NUM_1 or UART_NUM_2)
+ *   rx_gpio     – ESP32 GPIO receiving the sensor's TX line
+ *   tx_gpio     – ESP32 GPIO to sensor RX, or -1 if not connected
+ *   pitch_deg   – physical tilt relative to horizon (positive = up)
+ *   inverted    – true if the module is mounted upside-down;
+ *                 this negates the X axis so left/right stay correct
+ *   mux_channel – analog-mux channel (>=0), or -1 for dedicated UART
+ *   enabled     – false to skip this sensor without removing the row
+ */
 
-    typedef struct
-    {
-        const char *name;
-        uart_port_t uart_num;
-        int rx_gpio;
-        int tx_gpio;
-        int pitch_deg;
-        bool inverted;
-        int mux_channel;
-        bool enabled;
-    } eyen_sensor_cfg_t;
+struct SensorConfig
+{
+    const char *name;
+    uart_port_t uart_num;
+    int rx_gpio;
+    int tx_gpio;
+    int pitch_deg;
+    bool inverted;
+    int mux_channel;
+    bool enabled;
+};
 
 /* Default: one flat sensor on UART2 (RX2/TX2).
  * inverted=true negates radar X so left/right matches the eyes after
  * panel rotation (set false if gaze tracks the wrong way horizontally). */
-#define CFG_SENSORS {"main", UART_NUM_2, 16, 17, 0, true, -1, true},
+inline constexpr std::array sensors = {
+    SensorConfig{"main", UART_NUM_2, 16, 17, 0, true, -1, true},
+};
 
-    /*
-     * To restore pitch-stack multi-sensor (also set RADAR_SRC=radar_stack_multi.cpp):
-     *
-     * #define CFG_SENSORS                                                        \
-     *     { "lower", UART_NUM_2, 16, 17, -20, false, -1, true  },               \
-     *     { "upper", UART_NUM_1, 21, 22,  20, false, -1, true  },
-     */
-
-#ifdef __cplusplus
-}
-#endif
+} // namespace cfg

@@ -14,41 +14,26 @@
 
 #include "display.h"
 
-#include <stdlib.h>
-#include <string.h>
+#include <algorithm>
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_check.h"
-#include "esp_heap_caps.h"
 #include "esp_lcd_gc9a01.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_log.h"
 
-#include "config.h"
-
 static const char *TAG = "display";
 
-static esp_lcd_panel_handle_t s_panel_l;
-static esp_lcd_panel_handle_t s_panel_r;
-
-void display_fill(esp_lcd_panel_handle_t panel, uint16_t color)
+void Display::fill(esp_lcd_panel_handle_t panel, uint16_t color)
 {
-    const size_t line_bytes = CFG_LCD_H_RES * sizeof(uint16_t);
-    uint16_t *line = static_cast<uint16_t *>(heap_caps_malloc(line_bytes, MALLOC_CAP_DMA));
-    if (!line)
-        return;
-    for (int x = 0; x < CFG_LCD_H_RES; ++x)
-        line[x] = color;
-    for (int y = 0; y < CFG_LCD_V_RES; ++y)
-    {
-        esp_lcd_panel_draw_bitmap(panel, 0, y, CFG_LCD_H_RES, y + 1, line);
-    }
-    free(line);
+    std::fill(std::begin(dma_line_), std::end(dma_line_), color);
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
+        esp_lcd_panel_draw_bitmap(panel, 0, y, cfg::lcd::h_res, y + 1, dma_line_);
 }
 
-static esp_err_t apply_rotation(esp_lcd_panel_handle_t panel, int deg)
+esp_err_t Display::apply_rotation(esp_lcd_panel_handle_t panel, int deg)
 {
     bool swap = false, mx = false, my = false;
     switch (((deg % 360) + 360) % 360)
@@ -76,28 +61,29 @@ static esp_err_t apply_rotation(esp_lcd_panel_handle_t panel, int deg)
     return ESP_OK;
 }
 
-static esp_err_t create_panel(spi_host_device_t host, int cs_gpio, int rotation_deg,
-                              esp_lcd_panel_handle_t *out_panel)
+esp_err_t Display::create_panel(spi_host_device_t host, int cs_gpio, int rotation_deg,
+                                esp_lcd_panel_handle_t *out_panel)
 {
-    esp_lcd_panel_io_handle_t io = NULL;
+    esp_lcd_panel_io_handle_t io = nullptr;
     const esp_lcd_panel_io_spi_config_t io_config = {
         .cs_gpio_num = cs_gpio,
-        .dc_gpio_num = CFG_LCD_DC,
+        .dc_gpio_num = cfg::lcd::dc,
         .spi_mode = 0,
-        .pclk_hz = CFG_LCD_SPI_HZ,
+        .pclk_hz = cfg::lcd::spi_hz,
         .trans_queue_depth = 10,
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)host, &io_config, &io),
-                        TAG, "panel io failed");
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(host), &io_config, &io), TAG,
+        "panel io failed");
 
     const esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = -1,
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
         .bits_per_pixel = 16,
     };
-    esp_lcd_panel_handle_t panel = NULL;
+    esp_lcd_panel_handle_t panel = nullptr;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_gc9a01(io, &panel_config, &panel), TAG,
                         "gc9a01 create failed");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(panel), TAG, "reset failed");
@@ -110,10 +96,10 @@ static esp_err_t create_panel(spi_host_device_t host, int cs_gpio, int rotation_
     return ESP_OK;
 }
 
-static esp_err_t pulse_shared_reset(void)
+esp_err_t Display::pulse_shared_reset()
 {
     const gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << CFG_LCD_RST,
+        .pin_bit_mask = 1ULL << cfg::lcd::rst,
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -121,53 +107,44 @@ static esp_err_t pulse_shared_reset(void)
     };
     ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "RST gpio config failed");
 
-    gpio_set_level(static_cast<gpio_num_t>(CFG_LCD_RST), 0);
+    gpio_set_level(static_cast<gpio_num_t>(cfg::lcd::rst), 0);
     vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(static_cast<gpio_num_t>(CFG_LCD_RST), 1);
+    gpio_set_level(static_cast<gpio_num_t>(cfg::lcd::rst), 1);
     vTaskDelay(pdMS_TO_TICKS(120));
     return ESP_OK;
 }
 
-esp_err_t display_init(void)
+esp_err_t Display::init()
 {
     ESP_LOGI(TAG, "Init SPI bus for dual GC9A01");
     const spi_bus_config_t bus_config = {
-        .mosi_io_num = CFG_LCD_MOSI,
+        .mosi_io_num = cfg::lcd::mosi,
         .miso_io_num = -1,
-        .sclk_io_num = CFG_LCD_SCLK,
+        .sclk_io_num = cfg::lcd::sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
-        .max_transfer_sz = CFG_LCD_H_RES * 80 * static_cast<int>(sizeof(uint16_t)),
+        .max_transfer_sz = cfg::lcd::h_res * 80 * static_cast<int>(sizeof(uint16_t)),
     };
-    ESP_RETURN_ON_ERROR(spi_bus_initialize(CFG_LCD_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO), TAG,
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(cfg::lcd::spi_host, &bus_config, SPI_DMA_CH_AUTO), TAG,
                         "spi bus init failed");
 
     ESP_RETURN_ON_ERROR(pulse_shared_reset(), TAG, "shared RST failed");
 
     ESP_RETURN_ON_ERROR(
-        create_panel(CFG_LCD_SPI_HOST, CFG_LCD_CS_LEFT, CFG_LCD_LEFT_ROTATION_DEG, &s_panel_l), TAG,
-        "left panel failed");
+        create_panel(cfg::lcd::spi_host, cfg::lcd::cs_left, cfg::lcd::left_rotation_deg, &left_),
+        TAG, "left panel failed");
     vTaskDelay(pdMS_TO_TICKS(10));
     ESP_RETURN_ON_ERROR(
-        create_panel(CFG_LCD_SPI_HOST, CFG_LCD_CS_RIGHT, CFG_LCD_RIGHT_ROTATION_DEG, &s_panel_r),
+        create_panel(cfg::lcd::spi_host, cfg::lcd::cs_right, cfg::lcd::right_rotation_deg, &right_),
         TAG, "right panel failed");
 
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel_l, true), TAG, "left on");
-    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(s_panel_r, true), TAG, "right on");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(left_, true), TAG, "left on");
+    ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(right_, true), TAG, "right on");
 
-    display_fill(s_panel_l, 0xFFFF);
-    display_fill(s_panel_r, 0xFFFF);
+    fill(left_, 0xFFFF);
+    fill(right_, 0xFFFF);
 
-    ESP_LOGI(TAG, "Both eyes ready (%dx%d) rot L=%d° R=%d°", CFG_LCD_H_RES, CFG_LCD_V_RES,
-             CFG_LCD_LEFT_ROTATION_DEG, CFG_LCD_RIGHT_ROTATION_DEG);
+    ESP_LOGI(TAG, "Both eyes ready (%dx%d) rot L=%d° R=%d°", cfg::lcd::h_res, cfg::lcd::v_res,
+             cfg::lcd::left_rotation_deg, cfg::lcd::right_rotation_deg);
     return ESP_OK;
-}
-
-esp_lcd_panel_handle_t display_get_panel_left(void)
-{
-    return s_panel_l;
-}
-esp_lcd_panel_handle_t display_get_panel_right(void)
-{
-    return s_panel_r;
 }

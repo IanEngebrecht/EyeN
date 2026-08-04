@@ -15,49 +15,31 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 
-#include "esp_err.h"
 #include "ld2450.h"
-#include "radar_util.h"
 
 namespace radar
 {
 
-inline constexpr int max_slots = 4;
-
-struct SlotInfo
+struct PersistSlot
 {
-    const char *name{};
-    int target_count{};
-    Target targets[Ld2450::target_count]{};
+    int16_t x_mm{};
+    int16_t y_mm{};
+    int hits{};
 };
 
-struct Gaze
+struct FilterConfig
 {
-    bool human{};
-    float azimuth_deg{};
-    float elevation_norm{0.5f};
-    int vertical_band{-1};
-    int band_count{1};
-    uint8_t see_mask{};
-
-    Target primary{};
-    uint32_t frame_id{};
-
-    int total_targets{};
-    int slot_count{};
-    SlotInfo slots[max_slots]{};
+    int min_speed_cm_s{};
+    int min_dist_mm{};
+    int max_dist_mm{};
+    int persist_frames{};
 };
 
-esp_err_t init();
-esp_err_t update(Gaze &out);
-
-Ld2450 *get_dev(int slot);
-int slot_count();
-
-void get_filter(FilterConfig &out);
-void set_filter(const FilterConfig &cfg);
-
-float get_pot_frac();
+void filter_targets(std::span<Target> tgt, std::span<PersistSlot> persist, const FilterConfig &cfg);
+float target_azimuth_deg(const Target &t);
+int count_valid(std::span<const Target> tgt);
+int nearest_target_idx(std::span<const Target> tgt);
 
 } // namespace radar
