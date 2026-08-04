@@ -276,7 +276,7 @@ static void map_target_to_screen(const ld2450_target_t *t, float *out_angle, flo
 /* Pre-computed pixel screen position → polar coords (avoids per-frame trig) */
 static uint8_t s_dist_lut[CFG_LCD_V_RES][CFG_LCD_H_RES]; /* distance 0‥SWEEP_RADIUS scaled to 0‥255,
                                                             0 if outside */
-static uint8_t s_ang_lut[CFG_LCD_V_RES][CFG_LCD_H_RES];  /* angle 0‥255 mapping 0‥360° */
+static uint8_t s_ang_lut[CFG_LCD_V_RES][CFG_LCD_H_RES]; /* angle 0‥255 mapping 0‥360° */
 
 static void build_luts(void)
 {
