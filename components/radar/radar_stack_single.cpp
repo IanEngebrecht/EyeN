@@ -263,27 +263,196 @@ float elevation_from_distance(const Target &t)
     return (deg + cfg::gaze::max_deg) / (2.0f * cfg::gaze::max_deg);
 }
 
-} // anonymous namespace
+/* ── Internal update (was public radar::update) ─────────────────── */
 
-namespace radar
+esp_err_t do_update(radar::Gaze &out)
 {
+    out = radar::Gaze{};
 
-void get_filter(FilterConfig &out)
-{
-    out = s_filter;
+    pot_update();
+
+    if (!s_dev.valid() || s_slot < 0)
+        return ESP_ERR_INVALID_STATE;
+
+    const cfg::SensorConfig *sc = &sensor_cfg[s_slot];
+
+    std::array<Target, Ld2450::target_count> tmp{};
+    esp_err_t err = s_dev.read_frame(tmp, cfg::frame::timeout_ms);
+    if (err == ESP_OK)
+    {
+        if (sc->inverted)
+        {
+            for (auto &t : tmp)
+                t.x_mm = -t.x_mm;
+        }
+        radar::filter_targets(tmp, s_persist, s_filter);
+        std::memcpy(s_targets, tmp.data(), sizeof(s_targets));
+        s_last_ok_tick = xTaskGetTickCount();
+        s_has_data = true;
+        s_frame_id++;
+    }
+    else if (err != ESP_ERR_TIMEOUT)
+    {
+        ESP_LOGW(TAG, "%s frame: %s", sc->name, esp_err_to_name(err));
+    }
+
+    out.frame_id = s_frame_id;
+
+    radar::SlotInfo &info = out.slots[0];
+    info.name = sc->name;
+    if (slot_is_current())
+    {
+        std::memcpy(info.targets, s_targets, sizeof(info.targets));
+        info.target_count = radar::count_valid(s_targets);
+    }
+    out.slot_count = 1;
+    out.total_targets = info.target_count;
+
+    if (!slot_is_current())
+    {
+        out.human = false;
+        return ESP_OK;
+    }
+
+    Target focus;
+    if (!select_attention_target(s_targets, focus))
+    {
+        out.human = false;
+        return ESP_OK;
+    }
+
+    out.human = true;
+    out.primary = focus;
+    out.azimuth_deg = radar::target_azimuth_deg(focus);
+    out.elevation_norm = elevation_from_distance(focus);
+    out.see_mask = 0x01;
+    return ESP_OK;
 }
 
-void set_filter(const FilterConfig &cfg)
+/* ── Build ModeFrame from Gaze ──────────────────────────────────── */
+
+void build_mode_frame(const radar::Gaze &g, ModeFrame &mf)
 {
-    s_filter = cfg;
+    mf.human = g.human;
+    mf.azimuth_deg = g.azimuth_deg;
+    mf.elevation_norm = g.elevation_norm;
+    mf.frame_id = g.frame_id;
+    mf.target_count = g.total_targets;
+
+    mf.targets = {};
+    if (g.slot_count > 0)
+    {
+        for (int i = 0; i < Ld2450::target_count; ++i)
+            mf.targets[i] = g.slots[0].targets[i];
+    }
+
+    if (g.human)
+    {
+        mf.primary = g.primary;
+        mf.primary_idx = 0;
+        for (int i = 0; i < Ld2450::target_count; ++i)
+        {
+            if (mf.targets[i].valid && mf.targets[i].x_mm == g.primary.x_mm &&
+                mf.targets[i].y_mm == g.primary.y_mm)
+            {
+                mf.primary_idx = i;
+                break;
+            }
+        }
+    }
+    else
+    {
+        mf.primary = {};
+        mf.primary_idx = -1;
+    }
+}
+
+/* ── Frame logging ──────────────────────────────────────────────── */
+
+void log_frame(const radar::Gaze &g)
+{
+    char buf[512];
+    int pos = 0;
+    const int cap = static_cast<int>(sizeof(buf)) - 1;
+
+    uint32_t ms = esp_log_timestamp();
+    pos += snprintf(buf + pos, cap - pos, "$FRAME t=%lu", static_cast<unsigned long>(ms));
+
+    for (int s = 0; s < g.slot_count && pos < cap; ++s)
+    {
+        const radar::SlotInfo *sl = &g.slots[s];
+        pos += snprintf(buf + pos, cap - pos, " %s=%d:", sl->name, sl->target_count);
+        for (int t = 0; t < Ld2450::target_count && pos < cap; ++t)
+        {
+            if (t > 0)
+                buf[pos++] = '|';
+            const Target *tg = &sl->targets[t];
+            if (tg->valid)
+            {
+                pos += snprintf(buf + pos, cap - pos, "%d,%d,%u,%d", static_cast<int>(tg->x_mm),
+                                static_cast<int>(tg->y_mm), static_cast<unsigned>(tg->distance_mm),
+                                static_cast<int>(tg->speed_cm_s));
+            }
+            else
+            {
+                buf[pos++] = '-';
+            }
+        }
+    }
+    buf[pos] = '\0';
+    ESP_LOGI(TAG, "%s", buf);
+}
+
+/* ── DevCommand handling ────────────────────────────────────────── */
+
+void handle_dev_command(const radar::DevCommand &cmd)
+{
+    using K = radar::DevCommand::Kind;
+
+    switch (cmd.kind)
+    {
+    case K::filter_min_speed:
+        s_filter.min_speed_cm_s = cmd.value;
+        break;
+    case K::filter_min_dist:
+        s_filter.min_dist_mm = cmd.value;
+        break;
+    case K::filter_max_dist:
+        s_filter.max_dist_mm = cmd.value;
+        break;
+    case K::filter_persist:
+        s_filter.persist_frames = cmd.value;
+        break;
+    case K::hw_sensitivity:
+        if (s_dev.valid())
+            s_dev.set_sensitivity(static_cast<uint8_t>(cmd.value));
+        break;
+    case K::hw_energy:
+        if (s_dev.valid())
+            s_dev.set_energy_threshold(static_cast<uint16_t>(cmd.value));
+        break;
+    case K::hw_speed_filter:
+        if (s_dev.valid())
+            s_dev.set_speed_filter(static_cast<uint16_t>(cmd.value));
+        break;
+    case K::hw_hold_time:
+        if (s_dev.valid())
+            s_dev.set_hold_time(static_cast<uint16_t>(cmd.value));
+        break;
+    case K::hw_restart:
+        if (s_dev.valid())
+            s_dev.restart();
+        break;
+    }
+
     ESP_LOGI(TAG, "filter: min_spd=%d min_d=%d max_d=%d persist=%d", s_filter.min_speed_cm_s,
              s_filter.min_dist_mm, s_filter.max_dist_mm, s_filter.persist_frames);
 }
 
-float get_pot_frac()
+} // anonymous namespace
+
+namespace radar
 {
-    return s_pot_ok ? s_pot_filt : 0.5f;
-}
 
 esp_err_t init()
 {
@@ -340,80 +509,58 @@ esp_err_t init()
     return ESP_OK;
 }
 
-Ld2450 *get_dev(int slot)
+[[noreturn]] void run(void *ctx)
 {
-    if (slot != 0 || !s_dev.valid())
-        return nullptr;
-    return &s_dev;
-}
+    auto *rc = static_cast<RunCtx *>(ctx);
 
-int slot_count()
-{
-    return s_dev.valid() ? 1 : 0;
-}
+    bool last_human = false;
+    int log_skip = 0;
+    uint32_t last_frame_id = 0;
+    uint32_t missed_total = 0;
 
-esp_err_t update(Gaze &out)
-{
-    out = Gaze{};
-
-    pot_update();
-
-    if (!s_dev.valid() || s_slot < 0)
-        return ESP_ERR_INVALID_STATE;
-
-    const cfg::SensorConfig *sc = &sensor_cfg[s_slot];
-
-    std::array<Target, Ld2450::target_count> tmp{};
-    esp_err_t err = s_dev.read_frame(tmp, cfg::frame::timeout_ms);
-    if (err == ESP_OK)
+    while (true)
     {
-        if (sc->inverted)
+        DevCommand cmd;
+        while (rc->cmd_q->receive(cmd, 0))
+            handle_dev_command(cmd);
+
+        Gaze gaze;
+        esp_err_t err = do_update(gaze);
+        if (err != ESP_OK)
         {
-            for (auto &t : tmp)
-                t.x_mm = -t.x_mm;
+            ESP_LOGW(TAG, "radar update: %s", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
-        filter_targets(tmp, s_persist, s_filter);
-        std::memcpy(s_targets, tmp.data(), sizeof(s_targets));
-        s_last_ok_tick = xTaskGetTickCount();
-        s_has_data = true;
-        s_frame_id++;
-    }
-    else if (err != ESP_ERR_TIMEOUT)
-    {
-        ESP_LOGW(TAG, "%s frame: %s", sc->name, esp_err_to_name(err));
-    }
 
-    out.frame_id = s_frame_id;
+        rc->pot_frac->store(s_pot_ok ? s_pot_filt : 0.5f, std::memory_order_relaxed);
 
-    SlotInfo &info = out.slots[0];
-    info.name = sc->name;
-    if (slot_is_current())
-    {
-        std::memcpy(info.targets, s_targets, sizeof(info.targets));
-        info.target_count = count_valid(s_targets);
+        if (last_frame_id > 0 && gaze.frame_id > last_frame_id + 1)
+        {
+            uint32_t skipped = gaze.frame_id - last_frame_id - 1;
+            missed_total += skipped;
+            ESP_LOGW(TAG, "$SKIP frames=%lu total=%lu", static_cast<unsigned long>(skipped),
+                     static_cast<unsigned long>(missed_total));
+        }
+        last_frame_id = gaze.frame_id;
+
+        if (!gaze.human && last_human)
+        {
+            ESP_LOGI(TAG, "$LOST t=%lu", static_cast<unsigned long>(esp_log_timestamp()));
+            log_skip = 0;
+        }
+        last_human = gaze.human;
+
+        ModeFrame mf;
+        build_mode_frame(gaze, mf);
+        rc->frame_q->send(mf, 0);
+
+        if (++log_skip >= 10)
+        {
+            log_skip = 0;
+            log_frame(gaze);
+        }
     }
-    out.slot_count = 1;
-    out.total_targets = info.target_count;
-
-    if (!slot_is_current())
-    {
-        out.human = false;
-        return ESP_OK;
-    }
-
-    Target focus;
-    if (!select_attention_target(s_targets, focus))
-    {
-        out.human = false;
-        return ESP_OK;
-    }
-
-    out.human = true;
-    out.primary = focus;
-    out.azimuth_deg = target_azimuth_deg(focus);
-    out.elevation_norm = elevation_from_distance(focus);
-    out.see_mask = 0x01;
-    return ESP_OK;
 }
 
 } // namespace radar

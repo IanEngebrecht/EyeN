@@ -13,6 +13,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
@@ -29,25 +30,39 @@
 #include "display.h"
 #include "ld2450.h"
 #include "mode.h"
+#include "mode_frame.h"
 #include "radar_stack.h"
+#include "rtos/queue.h"
+#include "rtos/task.h"
 
 namespace
 {
 
 const char *TAG = "EyeN";
 
-Display s_display;
+/* ── Static FreeRTOS objects (all storage pre-allocated) ─────────── */
+
+rtos::Task<4096> s_radar_task;
+rtos::Task<4096> s_render_task;
+
+rtos::Queue<ModeFrame, radar::frame_queue_depth> s_frame_q;
+rtos::Queue<radar::DevCommand, radar::cmd_queue_depth> s_cmd_q;
+
+struct ModeSwitch
+{
+    int mode_idx;
+};
+rtos::Queue<ModeSwitch, 1> s_mode_q;
+
+std::atomic<float> s_pot_frac{0.5f};
+
+radar::RunCtx s_radar_ctx;
+
+/* ── Constants ──────────────────────────────────────────────────── */
 
 constexpr int cmd_buf_size = 128;
 constexpr int eye_mode_idx = 0;
 constexpr int radar_mode_idx = 1;
-
-std::array<DisplayMode *, 2> s_modes = {
-    &eye_mode(),
-    &radar_mode(),
-};
-
-int s_mode_idx = eye_mode_idx;
 
 /* ── Button ──────────────────────────────────────────────────────── */
 
@@ -77,109 +92,20 @@ bool button_pressed()
     return true;
 }
 
-/* ── Azimuth coast (shared across modes) ─────────────────────────── */
-
-bool s_az_have;
-float s_az_fixed;
-float s_az_rate;
-int64_t s_az_fixed_us;
-uint32_t s_az_last_frame;
-
-float aim_azimuth_deg(const radar::Gaze &g)
-{
-    const int64_t now = esp_timer_get_time();
-    const float az = g.azimuth_deg;
-
-    if (!s_az_have)
-    {
-        s_az_fixed = az;
-        s_az_rate = 0.0f;
-        s_az_fixed_us = now;
-        s_az_last_frame = g.frame_id;
-        s_az_have = true;
-        return az;
-    }
-
-    if (g.frame_id != s_az_last_frame)
-    {
-        const float daz = az - s_az_fixed;
-        const float dt = static_cast<float>(now - s_az_fixed_us) * 1e-6f;
-
-        if (std::fabs(daz) >= cfg::gaze::az_deadband_deg)
-        {
-            if (dt > 0.04f && dt < 0.6f)
-            {
-                const float inst = daz / dt;
-                s_az_rate += (inst - s_az_rate) * 0.45f;
-            }
-            s_az_fixed = az;
-        }
-        else
-        {
-            s_az_rate *= 0.35f;
-        }
-        s_az_fixed_us = now;
-        s_az_last_frame = g.frame_id;
-    }
-
-    float age = static_cast<float>(now - s_az_fixed_us) * 1e-6f;
-    if (age < 0.0f)
-        age = 0.0f;
-    if (age > 0.25f)
-        age = 0.25f;
-
-    float coast = s_az_rate * age;
-    if (coast > cfg::gaze::coast_max_deg)
-        coast = cfg::gaze::coast_max_deg;
-    else if (coast < -cfg::gaze::coast_max_deg)
-        coast = -cfg::gaze::coast_max_deg;
-
-    return s_az_fixed + coast;
-}
-
-void reset_azimuth_coast()
-{
-    s_az_have = false;
-    s_az_rate = 0.0f;
-}
-
-/* ── Logging ─────────────────────────────────────────────────────── */
-
-void log_frame(const radar::Gaze &g, [[maybe_unused]] const ModeFrame &mf)
-{
-    char buf[512];
-    int pos = 0;
-    const int cap = static_cast<int>(sizeof(buf)) - 1;
-
-    uint32_t ms = esp_log_timestamp();
-    pos += snprintf(buf + pos, cap - pos, "$FRAME t=%lu", static_cast<unsigned long>(ms));
-
-    for (int s = 0; s < g.slot_count && pos < cap; ++s)
-    {
-        const radar::SlotInfo *sl = &g.slots[s];
-        pos += snprintf(buf + pos, cap - pos, " %s=%d:", sl->name, sl->target_count);
-        for (int t = 0; t < Ld2450::target_count && pos < cap; ++t)
-        {
-            if (t > 0)
-                buf[pos++] = '|';
-            const Target *tg = &sl->targets[t];
-            if (tg->valid)
-            {
-                pos += snprintf(buf + pos, cap - pos, "%d,%d,%u,%d", static_cast<int>(tg->x_mm),
-                                static_cast<int>(tg->y_mm), static_cast<unsigned>(tg->distance_mm),
-                                static_cast<int>(tg->speed_cm_s));
-            }
-            else
-            {
-                buf[pos++] = '-';
-            }
-        }
-    }
-    buf[pos] = '\0';
-    ESP_LOGI(TAG, "%s", buf);
-}
-
 /* ── UART0 commands ──────────────────────────────────────────────── */
+
+void init_uart0_rx()
+{
+    const int buf = 512;
+    esp_err_t err = uart_driver_install(UART_NUM_0, buf, 0, 0, nullptr, 0);
+    if (err == ESP_ERR_INVALID_STATE)
+    {
+    }
+    else if (err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "uart0 driver install: %s", esp_err_to_name(err));
+    }
+}
 
 void handle_cmd(const char *line)
 {
@@ -201,58 +127,43 @@ void handle_cmd(const char *line)
     if (ec != std::errc{})
         return;
 
-    radar::FilterConfig filt;
-    radar::get_filter(filt);
-    bool is_sw = true;
+    using K = radar::DevCommand::Kind;
+    radar::DevCommand cmd{};
+    cmd.value = value;
+    bool known = true;
 
     if (param == "min_speed")
-        filt.min_speed_cm_s = value;
+        cmd.kind = K::filter_min_speed;
     else if (param == "min_dist")
-        filt.min_dist_mm = value;
+        cmd.kind = K::filter_min_dist;
     else if (param == "max_dist")
-        filt.max_dist_mm = value;
+        cmd.kind = K::filter_max_dist;
     else if (param == "persist")
-        filt.persist_frames = value;
+        cmd.kind = K::filter_persist;
+    else if (param == "sensitivity")
+        cmd.kind = K::hw_sensitivity;
+    else if (param == "energy")
+        cmd.kind = K::hw_energy;
+    else if (param == "speed_filter")
+        cmd.kind = K::hw_speed_filter;
+    else if (param == "hold_time")
+        cmd.kind = K::hw_hold_time;
+    else if (param == "restart")
+        cmd.kind = K::hw_restart;
     else
-        is_sw = false;
+        known = false;
 
-    if (is_sw)
+    if (!known)
     {
-        radar::set_filter(filt);
-        ESP_LOGI(TAG, "$ACK %.*s %d OK", static_cast<int>(param.size()), param.data(), value);
+        ESP_LOGW(TAG, "$ACK %.*s UNKNOWN_PARAM", static_cast<int>(param.size()), param.data());
         return;
     }
 
-    int n = radar::slot_count();
-    esp_err_t err = ESP_OK;
-
-    for (int i = 0; i < n; i++)
-    {
-        Ld2450 *dev = radar::get_dev(i);
-        if (!dev)
-            continue;
-
-        esp_err_t e = ESP_ERR_NOT_SUPPORTED;
-        if (param == "sensitivity")
-            e = dev->set_sensitivity(static_cast<uint8_t>(value));
-        else if (param == "energy")
-            e = dev->set_energy_threshold(static_cast<uint16_t>(value));
-        else if (param == "speed_filter")
-            e = dev->set_speed_filter(static_cast<uint16_t>(value));
-        else if (param == "hold_time")
-            e = dev->set_hold_time(static_cast<uint16_t>(value));
-        else if (param == "restart")
-            e = dev->restart();
-        if (e != ESP_OK)
-            err = e;
-    }
-
-    if (err == ESP_OK)
+    if (s_cmd_q.send(cmd, pdMS_TO_TICKS(50)))
         ESP_LOGI(TAG, "$ACK %.*s %d OK", static_cast<int>(param.size()), param.data(), value);
-    else if (err == ESP_ERR_NOT_SUPPORTED)
-        ESP_LOGW(TAG, "$ACK %.*s UNKNOWN_PARAM", static_cast<int>(param.size()), param.data());
     else
-        ESP_LOGW(TAG, "$ACK %.*s %d FAIL", static_cast<int>(param.size()), param.data(), value);
+        ESP_LOGW(TAG, "$ACK %.*s %d QUEUE_FULL", static_cast<int>(param.size()), param.data(),
+                 value);
 }
 
 char s_cmd_buf[cmd_buf_size];
@@ -279,97 +190,157 @@ void poll_uart0_commands()
     }
 }
 
-void init_uart0_rx()
+/* ── Render task ─────────────────────────────────────────────────── */
+
+Display s_display;
+
+std::array<DisplayMode *, 2> s_modes = {
+    &eye_mode(),
+    &radar_mode(),
+};
+
+int s_render_mode_idx = eye_mode_idx;
+
+bool s_az_have;
+float s_az_fixed;
+float s_az_rate;
+int64_t s_az_fixed_us;
+uint32_t s_az_last_frame;
+
+float aim_azimuth_deg(float az, uint32_t frame_id)
 {
-    const int buf = 512;
-    esp_err_t err = uart_driver_install(UART_NUM_0, buf, 0, 0, nullptr, 0);
-    if (err == ESP_ERR_INVALID_STATE)
+    const int64_t now = esp_timer_get_time();
+
+    if (!s_az_have)
     {
+        s_az_fixed = az;
+        s_az_rate = 0.0f;
+        s_az_fixed_us = now;
+        s_az_last_frame = frame_id;
+        s_az_have = true;
+        return az;
     }
-    else if (err != ESP_OK)
+
+    if (frame_id != s_az_last_frame)
     {
-        ESP_LOGW(TAG, "uart0 driver install: %s", esp_err_to_name(err));
+        const float daz = az - s_az_fixed;
+        const float dt = static_cast<float>(now - s_az_fixed_us) * 1e-6f;
+
+        if (std::fabs(daz) >= cfg::gaze::az_deadband_deg)
+        {
+            if (dt > 0.04f && dt < 0.6f)
+            {
+                const float inst = daz / dt;
+                s_az_rate += (inst - s_az_rate) * 0.45f;
+            }
+            s_az_fixed = az;
+        }
+        else
+        {
+            s_az_rate *= 0.35f;
+        }
+        s_az_fixed_us = now;
+        s_az_last_frame = frame_id;
     }
+
+    float age = static_cast<float>(now - s_az_fixed_us) * 1e-6f;
+    if (age < 0.0f)
+        age = 0.0f;
+    if (age > 0.25f)
+        age = 0.25f;
+
+    float coast = s_az_rate * age;
+    if (coast > cfg::gaze::coast_max_deg)
+        coast = cfg::gaze::coast_max_deg;
+    else if (coast < -cfg::gaze::coast_max_deg)
+        coast = -cfg::gaze::coast_max_deg;
+
+    return s_az_fixed + coast;
 }
 
-/* ── Mode switching ──────────────────────────────────────────────── */
+void reset_azimuth_coast()
+{
+    s_az_have = false;
+    s_az_rate = 0.0f;
+}
 
-void switch_mode(int new_idx)
+void switch_render_mode(int new_idx)
 {
     esp_lcd_panel_handle_t left = s_display.left();
     esp_lcd_panel_handle_t right = s_display.right();
 
-    s_modes[s_mode_idx]->leave();
-    s_mode_idx = new_idx;
-    s_modes[s_mode_idx]->enter(left, right);
-    ESP_LOGI(TAG, "$MODE %s", s_modes[s_mode_idx]->name());
+    s_modes[s_render_mode_idx]->leave();
+    s_render_mode_idx = new_idx;
+    s_modes[s_render_mode_idx]->enter(left, right);
+    ESP_LOGI(TAG, "$MODE %s", s_modes[s_render_mode_idx]->name());
+    reset_azimuth_coast();
 }
 
+[[noreturn]] void render_loop(void *)
+{
+    esp_lcd_panel_handle_t left = s_display.left();
+    esp_lcd_panel_handle_t right = s_display.right();
+
+    s_modes[s_render_mode_idx]->enter(left, right);
+    ESP_LOGI(TAG, "$MODE %s", s_modes[s_render_mode_idx]->name());
+
+    ModeFrame mf{};
+    bool have_frame = false;
+
+    while (true)
+    {
+        ModeSwitch ms;
+        if (s_mode_q.receive(ms, 0))
+            switch_render_mode(ms.mode_idx);
+
+        ModeFrame new_mf;
+        if (s_frame_q.receive(new_mf, pdMS_TO_TICKS(10)))
+        {
+            mf = new_mf;
+            have_frame = true;
+        }
+
+        if (!have_frame)
+            continue;
+
+        if (mf.human)
+            mf.azimuth_deg = aim_azimuth_deg(mf.azimuth_deg, mf.frame_id);
+
+        s_modes[s_render_mode_idx]->render(left, right, mf);
+    }
+}
+
+/* ── Mode switching (control plane) ──────────────────────────────── */
+
+int s_ctrl_mode_idx = eye_mode_idx;
 bool s_pot_at_limit = false;
 
-void poll_pot_mode_switch(bool &last_human)
+void request_mode_switch(int new_idx)
 {
-    float frac = radar::get_pot_frac();
+    if (new_idx == s_ctrl_mode_idx)
+        return;
+    s_ctrl_mode_idx = new_idx;
+    ModeSwitch ms{new_idx};
+    s_mode_q.send(ms, pdMS_TO_TICKS(50));
+}
+
+void poll_pot_mode_switch()
+{
+    float frac = s_pot_frac.load(std::memory_order_relaxed);
     bool near_limit = frac <= cfg::pot::limit_enter || frac >= (1.0f - cfg::pot::limit_enter);
     bool clear_limit = frac > cfg::pot::limit_exit && frac < (1.0f - cfg::pot::limit_exit);
 
     if (!s_pot_at_limit && near_limit)
     {
         s_pot_at_limit = true;
-        if (s_mode_idx != radar_mode_idx)
-        {
-            switch_mode(radar_mode_idx);
-            reset_azimuth_coast();
-            last_human = false;
-        }
+        if (s_ctrl_mode_idx != radar_mode_idx)
+            request_mode_switch(radar_mode_idx);
     }
     else if (s_pot_at_limit && clear_limit)
     {
         s_pot_at_limit = false;
-        if (s_mode_idx != eye_mode_idx)
-        {
-            switch_mode(eye_mode_idx);
-            reset_azimuth_coast();
-            last_human = false;
-        }
-    }
-}
-
-/* ── Build ModeFrame from radar::Gaze ────────────────────────────── */
-
-void build_mode_frame(const radar::Gaze &g, float az_deg, ModeFrame &mf)
-{
-    mf.human = g.human;
-    mf.azimuth_deg = az_deg;
-    mf.elevation_norm = g.elevation_norm;
-    mf.frame_id = g.frame_id;
-    mf.target_count = g.total_targets;
-
-    mf.targets = {};
-    if (g.slot_count > 0)
-    {
-        for (int i = 0; i < Ld2450::target_count; ++i)
-            mf.targets[i] = g.slots[0].targets[i];
-    }
-
-    if (g.human)
-    {
-        mf.primary = g.primary;
-        mf.primary_idx = 0;
-        for (int i = 0; i < Ld2450::target_count; ++i)
-        {
-            if (mf.targets[i].valid && mf.targets[i].x_mm == g.primary.x_mm &&
-                mf.targets[i].y_mm == g.primary.y_mm)
-            {
-                mf.primary_idx = i;
-                break;
-            }
-        }
-    }
-    else
-    {
-        mf.primary = {};
-        mf.primary_idx = -1;
+        if (s_ctrl_mode_idx != eye_mode_idx)
+            request_mode_switch(eye_mode_idx);
     }
 }
 
@@ -384,15 +355,23 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(s_display.init());
     ESP_ERROR_CHECK(radar::init());
 
-    esp_lcd_panel_handle_t left = s_display.left();
-    esp_lcd_panel_handle_t right = s_display.right();
-    s_modes[s_mode_idx]->enter(left, right);
-    ESP_LOGI(TAG, "$MODE %s", s_modes[s_mode_idx]->name());
+    s_frame_q.create();
+    s_cmd_q.create();
+    s_mode_q.create();
 
-    bool last_human = false;
-    int log_skip = 0;
-    uint32_t last_frame_id = 0;
-    uint32_t missed_total = 0;
+    s_radar_ctx = {
+        .frame_q = &s_frame_q,
+        .cmd_q = &s_cmd_q,
+        .pot_frac = &s_pot_frac,
+    };
+
+    s_render_task.create("render", 5, render_loop, nullptr, 0);
+    s_radar_task.create("radar", 6, radar::run, &s_radar_ctx, 1);
+
+    const uint32_t init_heap = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "tasks spawned, heap=%lu", static_cast<unsigned long>(init_heap));
+
+    TickType_t next_health = xTaskGetTickCount() + pdMS_TO_TICKS(30'000);
 
     while (true)
     {
@@ -400,58 +379,24 @@ extern "C" void app_main(void)
 
         if (button_pressed())
         {
-            int next = (s_mode_idx + 1) % static_cast<int>(s_modes.size());
-            switch_mode(next);
-            reset_azimuth_coast();
-            last_human = false;
+            int next = (s_ctrl_mode_idx + 1) % static_cast<int>(s_modes.size());
+            request_mode_switch(next);
         }
 
-        radar::Gaze gaze;
-        esp_err_t err = radar::update(gaze);
-        if (err != ESP_OK)
+        poll_pot_mode_switch();
+
+        if ((int32_t)(xTaskGetTickCount() - next_health) >= 0)
         {
-            ESP_LOGW(TAG, "radar update: %s", esp_err_to_name(err));
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
+            uint32_t heap = esp_get_free_heap_size();
+            int32_t delta = static_cast<int32_t>(heap) - static_cast<int32_t>(init_heap);
+            UBaseType_t radar_stk = uxTaskGetStackHighWaterMark(s_radar_task.handle());
+            UBaseType_t render_stk = uxTaskGetStackHighWaterMark(s_render_task.handle());
+            ESP_LOGI(TAG, "$HEALTH heap=%lu delta=%ld radar_stk=%lu render_stk=%lu",
+                     static_cast<unsigned long>(heap), static_cast<long>(delta),
+                     static_cast<unsigned long>(radar_stk), static_cast<unsigned long>(render_stk));
+            next_health = xTaskGetTickCount() + pdMS_TO_TICKS(60'000);
         }
 
-        poll_pot_mode_switch(last_human);
-
-        float az_deg = 0.0f;
-
-        if (last_frame_id > 0 && gaze.frame_id > last_frame_id + 1)
-        {
-            uint32_t skipped = gaze.frame_id - last_frame_id - 1;
-            missed_total += skipped;
-            ESP_LOGW(TAG, "$SKIP frames=%lu total=%lu", static_cast<unsigned long>(skipped),
-                     static_cast<unsigned long>(missed_total));
-        }
-        last_frame_id = gaze.frame_id;
-
-        if (gaze.human)
-        {
-            az_deg = aim_azimuth_deg(gaze);
-        }
-        else
-        {
-            if (last_human)
-            {
-                ESP_LOGI(TAG, "$LOST t=%lu", static_cast<unsigned long>(esp_log_timestamp()));
-                log_skip = 0;
-            }
-            reset_azimuth_coast();
-        }
-        last_human = gaze.human;
-
-        ModeFrame mf;
-        build_mode_frame(gaze, az_deg, mf);
-
-        s_modes[s_mode_idx]->render(left, right, mf);
-
-        if (++log_skip >= 10)
-        {
-            log_skip = 0;
-            log_frame(gaze, mf);
-        }
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
