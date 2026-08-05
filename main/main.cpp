@@ -368,7 +368,10 @@ extern "C" void app_main(void)
     s_render_task.create("render", 5, render_loop, nullptr, 0);
     s_radar_task.create("radar", 6, radar::run, &s_radar_ctx, 1);
 
-    ESP_LOGI(TAG, "tasks spawned, heap=%lu", static_cast<unsigned long>(esp_get_free_heap_size()));
+    const uint32_t init_heap = esp_get_free_heap_size();
+    ESP_LOGI(TAG, "tasks spawned, heap=%lu", static_cast<unsigned long>(init_heap));
+
+    TickType_t next_health = xTaskGetTickCount() + pdMS_TO_TICKS(30'000);
 
     while (true)
     {
@@ -381,6 +384,18 @@ extern "C" void app_main(void)
         }
 
         poll_pot_mode_switch();
+
+        if ((int32_t)(xTaskGetTickCount() - next_health) >= 0)
+        {
+            uint32_t heap = esp_get_free_heap_size();
+            int32_t delta = static_cast<int32_t>(heap) - static_cast<int32_t>(init_heap);
+            UBaseType_t radar_stk = uxTaskGetStackHighWaterMark(s_radar_task.handle());
+            UBaseType_t render_stk = uxTaskGetStackHighWaterMark(s_render_task.handle());
+            ESP_LOGI(TAG, "$HEALTH heap=%lu delta=%ld radar_stk=%lu render_stk=%lu",
+                     static_cast<unsigned long>(heap), static_cast<long>(delta),
+                     static_cast<unsigned long>(radar_stk), static_cast<unsigned long>(render_stk));
+            next_health = xTaskGetTickCount() + pdMS_TO_TICKS(60'000);
+        }
 
         vTaskDelay(pdMS_TO_TICKS(20));
     }
