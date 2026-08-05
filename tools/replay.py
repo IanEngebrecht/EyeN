@@ -49,14 +49,6 @@ TARGET_RE = re.compile(r"(-?\d+),(-?\d+),(\d+),(-?\d+)")
 
 SENSOR_COLORS = ["#3498db", "#e74c3c", "#2ecc71", "#f39c12"]
 
-ZONE_COLORS = {
-    "upper":  "#e74c3c",
-    "both":   "#f1c40f",
-    "lower":  "#3498db",
-}
-ZONE_DIM = "#333333"
-
-
 def parse_sensor_targets(blob):
     targets = []
     for part in blob.split("|"):
@@ -98,42 +90,6 @@ def parse_log(path):
     return frames
 
 
-# ── Zone logic ───────────────────────────────────────────────────────────────
-
-def get_zone_counts(frame):
-    """Derive per-zone target counts from sensor data.
-
-    Returns dict with keys 'upper', 'both', 'lower'.
-    Values are 0..3 representing detection intensity.
-    Also returns the active band name (or None).
-    """
-    names = list(frame["sensors"].keys())
-    if len(names) < 2:
-        lo_n = frame["sensors"][names[0]]["count"] if names else 0
-        return {"upper": 0, "both": 0, "lower": lo_n}, ("lower" if lo_n else None)
-
-    lo_name, hi_name = names[0], names[1]
-    lo_n = frame["sensors"][lo_name]["count"]
-    hi_n = frame["sensors"][hi_name]["count"]
-
-    zones = {"upper": 0, "both": 0, "lower": 0}
-    active = None
-
-    if lo_n > 0 and hi_n > 0:
-        zones["both"] = min(lo_n, hi_n)
-        zones["lower"] = lo_n
-        zones["upper"] = hi_n
-        active = "both"
-    elif lo_n > 0:
-        zones["lower"] = lo_n
-        active = "lower"
-    elif hi_n > 0:
-        zones["upper"] = hi_n
-        active = "upper"
-
-    return zones, active
-
-
 # ── Visualization ────────────────────────────────────────────────────────────
 
 LCD_RES = 240
@@ -143,14 +99,13 @@ LIVE_DEFAULT_RANGE = 2000
 
 
 def setup_figure(radar_range_x=RADAR_MAX_MM, radar_range_y=RADAR_MAX_MM):
-    fig = plt.figure(figsize=(16, 6.5))
+    fig = plt.figure(figsize=(14, 6.5))
     fig.patch.set_facecolor("#1e1e1e")
 
-    gs = GridSpec(1, 3, figure=fig, width_ratios=[1.5, 0.18, 0.9],
-                  wspace=0.25, left=0.05, right=0.96, bottom=0.1, top=0.92)
+    gs = GridSpec(1, 2, figure=fig, width_ratios=[1.5, 0.9],
+                  wspace=0.25, left=0.06, right=0.96, bottom=0.1, top=0.92)
     ax_radar = fig.add_subplot(gs[0, 0])
-    ax_zone = fig.add_subplot(gs[0, 1])
-    ax_eye = fig.add_subplot(gs[0, 2])
+    ax_eye = fig.add_subplot(gs[0, 1])
 
     # ── Radar ──
     ax_radar.set_facecolor("#2d2d2d")
@@ -173,16 +128,6 @@ def setup_figure(radar_range_x=RADAR_MAX_MM, radar_range_y=RADAR_MAX_MM):
         ax_radar.plot([0, fx], [0, fy], "--", color="#555", linewidth=0.8)
     ax_radar.plot(0, 0, "^", color="white", markersize=10, zorder=10)
 
-    # ── Zone indicator (static frame) ──
-    ax_zone.set_facecolor("#1e1e1e")
-    ax_zone.set_xlim(0, 1)
-    ax_zone.set_ylim(0, 1)
-    ax_zone.set_xticks([])
-    ax_zone.set_yticks([])
-    for spine in ax_zone.spines.values():
-        spine.set_visible(False)
-    ax_zone.set_title("Bands", color="white", fontsize=10)
-
     # ── Eye ──
     ax_eye.set_facecolor("#2d2d2d")
     ax_eye.set_xlim(-10, LCD_RES + 10)
@@ -200,68 +145,10 @@ def setup_figure(radar_range_x=RADAR_MAX_MM, radar_range_y=RADAR_MAX_MM):
 
     timestamp_txt = fig.text(0.5, 0.015, "", ha="center", color="gray", fontsize=9)
 
-    return fig, ax_radar, ax_zone, ax_eye, timestamp_txt
+    return fig, ax_radar, ax_eye, timestamp_txt
 
 
-def draw_zones(ax_zone, zones, active):
-    """Draw three glowing zone bars with an arrow on the active band."""
-    while ax_zone.patches:
-        ax_zone.patches[-1].remove()
-    while ax_zone.texts:
-        ax_zone.texts[-1].remove()
-    while ax_zone.lines:
-        ax_zone.lines[-1].remove()
-    while ax_zone.collections:
-        ax_zone.collections[-1].remove()
-
-    zone_order = ["upper", "both", "lower"]
-    gap = 0.04
-    h = (1.0 - gap * 4) / 3.0
-    margin_x = 0.08
-    bar_w = 1.0 - margin_x * 2
-
-    for i, zname in enumerate(zone_order):
-        y = 1.0 - gap * (i + 1) - h * (i + 1)
-        count = zones.get(zname, 0)
-        is_active = (zname == active)
-
-        intensity = min(count / 3.0, 1.0)
-        base_color = ZONE_COLORS[zname]
-
-        # Background (dim)
-        bg = patches.FancyBboxPatch(
-            (margin_x, y), bar_w, h,
-            boxstyle="round,pad=0.02",
-            facecolor=ZONE_DIM, edgecolor="#555", linewidth=0.8)
-        ax_zone.add_patch(bg)
-
-        if intensity > 0:
-            r, g, b = [int(base_color[i:i+2], 16) / 255 for i in (1, 3, 5)]
-            fill_color = (r, g, b, 0.3 + 0.7 * intensity)
-            fill = patches.FancyBboxPatch(
-                (margin_x, y), bar_w * intensity, h,
-                boxstyle="round,pad=0.02",
-                facecolor=fill_color, edgecolor="none")
-            ax_zone.add_patch(fill)
-
-        if is_active:
-            border = patches.FancyBboxPatch(
-                (margin_x, y), bar_w, h,
-                boxstyle="round,pad=0.02",
-                facecolor="none", edgecolor=base_color, linewidth=2.5)
-            ax_zone.add_patch(border)
-            ax_zone.annotate("►", (margin_x - 0.02, y + h / 2),
-                             fontsize=10, color=base_color, fontweight="bold",
-                             ha="right", va="center")
-
-        label = {"upper": "upper", "both": "both", "lower": "lower"}[zname]
-        ax_zone.text(0.5, y + h / 2, label,
-                     ha="center", va="center",
-                     fontsize=8, color="white" if is_active else "#888",
-                     fontweight="bold" if is_active else "normal")
-
-
-def draw_frame(ax_radar, ax_zone, ax_eye, timestamp_txt, frame, idx, total, frames):
+def draw_frame(ax_radar, ax_eye, timestamp_txt, frame, idx, total, frames):
     while len(ax_radar.lines) > 3:
         ax_radar.lines[-1].remove()
     while ax_radar.collections:
@@ -278,13 +165,6 @@ def draw_frame(ax_radar, ax_zone, ax_eye, timestamp_txt, frame, idx, total, fram
     timestamp_txt.set_text(
         f"t = {t_s:.1f}s   frame {idx+1}/{total}   [{status}]"
     )
-
-    # ── Zone indicator ──
-    if frame["lost"]:
-        draw_zones(ax_zone, {"upper": 0, "both": 0, "lower": 0}, None)
-    else:
-        zones, active = get_zone_counts(frame)
-        draw_zones(ax_zone, zones, active)
 
     # ── Radar: sensor legend colors ──
     legend_entries = {}
@@ -391,7 +271,7 @@ def run_replay(frames, speed):
         sys.exit(1)
 
     rx, ry = compute_radar_range(frames)
-    fig, ax_radar, ax_zone, ax_eye, ts_txt = setup_figure(
+    fig, ax_radar, ax_eye, ts_txt = setup_figure(
         radar_range_x=rx, radar_range_y=ry)
 
     paused = [False]
@@ -418,7 +298,7 @@ def run_replay(frames, speed):
     i = 0
     while i < len(frames) and plt.fignum_exists(fig.number):
         if speed == 0:
-            draw_frame(ax_radar, ax_zone, ax_eye, ts_txt,
+            draw_frame(ax_radar, ax_eye, ts_txt,
                        frames[i], i, len(frames), frames)
             fig.canvas.draw_idle()
             fig.canvas.flush_events()
@@ -480,15 +360,14 @@ def setup_live_figure():
     slider_total = n_sliders * (slider_height + slider_gap) + 0.03
     plot_bottom = slider_total + 0.06
 
-    fig = plt.figure(figsize=(16, 7.5))
+    fig = plt.figure(figsize=(14, 7.5))
     fig.patch.set_facecolor("#1e1e1e")
 
-    gs = GridSpec(1, 3, figure=fig, width_ratios=[1.5, 0.18, 0.9],
-                  wspace=0.25, left=0.05, right=0.96,
+    gs = GridSpec(1, 2, figure=fig, width_ratios=[1.5, 0.9],
+                  wspace=0.25, left=0.06, right=0.96,
                   bottom=plot_bottom, top=0.92)
     ax_radar = fig.add_subplot(gs[0, 0])
-    ax_zone = fig.add_subplot(gs[0, 1])
-    ax_eye = fig.add_subplot(gs[0, 2])
+    ax_eye = fig.add_subplot(gs[0, 1])
 
     # ── Radar ──
     ax_radar.set_facecolor("#2d2d2d")
@@ -510,16 +389,6 @@ def setup_live_figure():
         fy = fov_r * np.cos(fov_half)
         ax_radar.plot([0, fx], [0, fy], "--", color="#555", linewidth=0.8)
     ax_radar.plot(0, 0, "^", color="white", markersize=10, zorder=10)
-
-    # ── Zone indicator ──
-    ax_zone.set_facecolor("#1e1e1e")
-    ax_zone.set_xlim(0, 1)
-    ax_zone.set_ylim(0, 1)
-    ax_zone.set_xticks([])
-    ax_zone.set_yticks([])
-    for spine in ax_zone.spines.values():
-        spine.set_visible(False)
-    ax_zone.set_title("Bands", color="white", fontsize=10)
 
     # ── Eye ──
     ax_eye.set_facecolor("#2d2d2d")
@@ -554,7 +423,7 @@ def setup_live_figure():
         sl.valtext.set_fontsize(8)
         sliders[param] = sl
 
-    return fig, ax_radar, ax_zone, ax_eye, timestamp_txt, sliders
+    return fig, ax_radar, ax_eye, timestamp_txt, sliders
 
 
 def run_live(port, baud):
@@ -569,7 +438,7 @@ def run_live(port, baud):
     print("Connected. Waiting for $FRAME lines...  (Q to quit)")
     print("Use sliders to tune sensor parameters (requires TX wired).")
 
-    fig, ax_radar, ax_zone, ax_eye, ts_txt, sliders = setup_live_figure()
+    fig, ax_radar, ax_eye, ts_txt, sliders = setup_live_figure()
 
     frames = collections.deque(maxlen=500)
     frame_count = [0]
@@ -633,7 +502,7 @@ def run_live(port, baud):
             frames_list = list(frames)
             idx = len(frames_list) - 1
             maybe_rescale(ax_radar, frames_list[-5:])
-            draw_frame(ax_radar, ax_zone, ax_eye, ts_txt,
+            draw_frame(ax_radar, ax_eye, ts_txt,
                        frames_list[idx], idx, frame_count[0], frames_list)
             fig.canvas.draw_idle()
 

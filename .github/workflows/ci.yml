@@ -20,6 +20,31 @@ jobs:
           idf.py set-target esp32
           idf.py build
 
+      - name: Check binary size
+        shell: bash
+        run: |
+          MAX_KB=1024
+          size=$(stat -c%s build/EyeN.bin)
+          kb=$((size / 1024))
+          echo "EyeN.bin: ${kb} KB (limit: ${MAX_KB} KB)"
+          if [ "$kb" -gt "$MAX_KB" ]; then
+            echo "::error::Binary too large: ${kb} KB > ${MAX_KB} KB"
+            exit 1
+          fi
+
+      - name: Run cppcheck
+        shell: bash
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends cppcheck
+          cppcheck --enable=warning,performance --error-exitcode=1 \
+            --language=c++ --std=c++23 \
+            --suppress=missingIncludeSystem --suppress=missingInclude \
+            -I components/config/include \
+            -I components/drivers/include \
+            -I components/radar/include \
+            -I components/ui/include \
+            components/ main/
+
   format:
     runs-on: ubuntu-latest
     steps:

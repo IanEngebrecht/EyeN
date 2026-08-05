@@ -192,9 +192,8 @@ bool slot_is_current()
 
 esp_err_t pot_init()
 {
-    adc_oneshot_unit_init_cfg_t unit_cfg = {
-        .unit_id = cfg::pot::adc_unit,
-    };
+    adc_oneshot_unit_init_cfg_t unit_cfg = {};
+    unit_cfg.unit_id = cfg::pot::adc_unit;
     esp_err_t err = adc_oneshot_new_unit(&unit_cfg, &s_adc);
     if (err != ESP_OK)
     {

@@ -65,24 +65,22 @@ esp_err_t Display::create_panel(spi_host_device_t host, int cs_gpio, int rotatio
                                 esp_lcd_panel_handle_t *out_panel)
 {
     esp_lcd_panel_io_handle_t io = nullptr;
-    const esp_lcd_panel_io_spi_config_t io_config = {
-        .cs_gpio_num = cs_gpio,
-        .dc_gpio_num = cfg::lcd::dc,
-        .spi_mode = 0,
-        .pclk_hz = cfg::lcd::spi_hz,
-        .trans_queue_depth = 10,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-    };
+    esp_lcd_panel_io_spi_config_t io_config = {};
+    io_config.cs_gpio_num = cs_gpio;
+    io_config.dc_gpio_num = cfg::lcd::dc;
+    io_config.spi_mode = 0;
+    io_config.pclk_hz = cfg::lcd::spi_hz;
+    io_config.trans_queue_depth = 10;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi(static_cast<esp_lcd_spi_bus_handle_t>(host), &io_config, &io), TAG,
         "panel io failed");
 
-    const esp_lcd_panel_dev_config_t panel_config = {
-        .reset_gpio_num = -1,
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
-        .bits_per_pixel = 16,
-    };
+    esp_lcd_panel_dev_config_t panel_config = {};
+    panel_config.reset_gpio_num = -1;
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR;
+    panel_config.bits_per_pixel = 16;
     esp_lcd_panel_handle_t panel = nullptr;
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_gc9a01(io, &panel_config, &panel), TAG,
                         "gc9a01 create failed");
@@ -117,14 +115,13 @@ esp_err_t Display::pulse_shared_reset()
 esp_err_t Display::init()
 {
     ESP_LOGI(TAG, "Init SPI bus for dual GC9A01");
-    const spi_bus_config_t bus_config = {
-        .mosi_io_num = cfg::lcd::mosi,
-        .miso_io_num = -1,
-        .sclk_io_num = cfg::lcd::sclk,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = cfg::lcd::h_res * 80 * static_cast<int>(sizeof(uint16_t)),
-    };
+    spi_bus_config_t bus_config = {};
+    bus_config.mosi_io_num = cfg::lcd::mosi;
+    bus_config.miso_io_num = -1;
+    bus_config.sclk_io_num = cfg::lcd::sclk;
+    bus_config.quadwp_io_num = -1;
+    bus_config.quadhd_io_num = -1;
+    bus_config.max_transfer_sz = cfg::lcd::h_res * 80 * static_cast<int>(sizeof(uint16_t));
     ESP_RETURN_ON_ERROR(spi_bus_initialize(cfg::lcd::spi_host, &bus_config, SPI_DMA_CH_AUTO), TAG,
                         "spi bus init failed");
 
