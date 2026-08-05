@@ -14,11 +14,14 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "esp_err.h"
 #include "ld2450.h"
+#include "mode_frame.h"
 #include "radar_util.h"
+#include "rtos/queue.h"
 
 namespace radar
 {
@@ -49,15 +52,35 @@ struct Gaze
     SlotInfo slots[max_slots]{};
 };
 
+struct DevCommand
+{
+    enum class Kind : uint8_t
+    {
+        filter_min_speed,
+        filter_min_dist,
+        filter_max_dist,
+        filter_persist,
+        hw_sensitivity,
+        hw_energy,
+        hw_speed_filter,
+        hw_hold_time,
+        hw_restart,
+    };
+    Kind kind;
+    int value;
+};
+
+inline constexpr int frame_queue_depth = 2;
+inline constexpr int cmd_queue_depth = 4;
+
+struct RunCtx
+{
+    rtos::Queue<ModeFrame, frame_queue_depth> *frame_q;
+    rtos::Queue<DevCommand, cmd_queue_depth> *cmd_q;
+    std::atomic<float> *pot_frac;
+};
+
 esp_err_t init();
-esp_err_t update(Gaze &out);
-
-Ld2450 *get_dev(int slot);
-int slot_count();
-
-void get_filter(FilterConfig &out);
-void set_filter(const FilterConfig &cfg);
-
-float get_pot_frac();
+[[noreturn]] void run(void *ctx);
 
 } // namespace radar
