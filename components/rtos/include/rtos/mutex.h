@@ -11,7 +11,10 @@ class Mutex
   public:
     void create() { handle_ = xSemaphoreCreateMutexStatic(&storage_); }
 
-    bool lock(TickType_t timeout = portMAX_DELAY) { return xSemaphoreTake(handle_, timeout) == pdTRUE; }
+    bool lock(TickType_t timeout = portMAX_DELAY)
+    {
+        return xSemaphoreTake(handle_, timeout) == pdTRUE;
+    }
 
     void unlock() { xSemaphoreGive(handle_); }
 

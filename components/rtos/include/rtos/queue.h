@@ -9,15 +9,20 @@
 namespace rtos
 {
 
-template <typename T, size_t Depth>
-class Queue
+template <typename T, size_t Depth> class Queue
 {
   public:
     void create() { handle_ = xQueueCreateStatic(Depth, sizeof(T), storage_, &control_); }
 
-    bool send(const T &item, TickType_t timeout) { return xQueueSend(handle_, &item, timeout) == pdTRUE; }
+    bool send(const T &item, TickType_t timeout)
+    {
+        return xQueueSend(handle_, &item, timeout) == pdTRUE;
+    }
 
-    bool receive(T &item, TickType_t timeout) { return xQueueReceive(handle_, &item, timeout) == pdTRUE; }
+    bool receive(T &item, TickType_t timeout)
+    {
+        return xQueueReceive(handle_, &item, timeout) == pdTRUE;
+    }
 
     bool overwrite(const T &item)
     {
