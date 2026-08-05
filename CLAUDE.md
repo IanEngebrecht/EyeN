@@ -2,6 +2,12 @@
 
 ESP32 digital eyes: dual GC9A01 round LCDs track people via an HLK-LD2450 mmWave radar sensor. ESP-IDF 5.5.2, C++ (targeting C++26 long-term).
 
+## Prerequisites
+
+```bash
+sudo apt install clang-format-18 cppcheck   # CI lint tools
+```
+
 ## Build
 
 ```bash
@@ -20,12 +26,14 @@ components/
   config/     Header-only shared configuration (pins, tuning constants)
   drivers/    Hardware abstraction: display (SPI + GC9A01), ld2450 (UART radar)
   radar/      Sensor processing: target filtering, multi-target attention, gaze computation
+  rtos/       Header-only C++ wrappers for FreeRTOS static primitives (Task, Queue, Mutex)
   ui/         Display mode renderers: eye tracking, radar PPI sweep
-main/         Application entry point (app_main, main loop, mode switching)
+main/         Application entry point (app_main, task spawning, control plane)
+docs/         Log message reference
 tools/        Python visualization/tuning tool (not part of firmware)
 ```
 
-Dependency graph: `config ← drivers ← radar ← main`, `config ← drivers ← ui ← main`.
+Dependency graph: `config ← drivers ← radar ← main`, `config ← drivers ← ui ← main`, `rtos ← radar`, `rtos ← main`.
 
 The radar component has two backends selected via `RADAR_SRC` in `components/radar/CMakeLists.txt`:
 - `radar_stack_single.cpp` (default) — single sensor + potentiometer vertical
@@ -34,10 +42,12 @@ The radar component has two backends selected via `RADAR_SRC` in `components/rad
 ## Conventions
 
 - C++ source files (`.cpp`), C-compatible headers (`.h` with `extern "C"` guards)
-- `clang-format` enforced (LLVM-based, see `.clang-format`); run before committing
-- Single-threaded: everything runs in `app_main` on the default FreeRTOS task
+- `clang-format-18` enforced (LLVM-based, see `.clang-format`); run before committing
+- Concurrent: radar task (core 1, pri 6), render task (core 0, pri 5), app_main control plane (core 0, pri 1)
+- Zero runtime heap allocation: all FreeRTOS objects use `*Static` variants via `rtos::` wrappers
+- Inter-task communication via `rtos::Queue` (typed, statically allocated) and `std::atomic`
 - All hardware pin assignments and tuning parameters live in `components/config/include/config.h`
-- Display modes implement the `display_mode_t` vtable interface from `components/ui/include/mode.h`
+- Display modes implement the `DisplayMode` vtable interface from `components/ui/include/mode.h`
 - ESP-IDF managed components handle external dependencies (`idf_component.yml` in `components/drivers/` and `main/`)
 
 ## Common tasks
