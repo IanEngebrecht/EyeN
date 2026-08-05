@@ -294,7 +294,7 @@ void switch_render_mode(int new_idx)
             switch_render_mode(ms.mode_idx);
 
         ModeFrame new_mf;
-        if (s_frame_q.receive(new_mf, have_frame ? 0 : pdMS_TO_TICKS(150)))
+        if (s_frame_q.receive(new_mf, pdMS_TO_TICKS(10)))
         {
             mf = new_mf;
             have_frame = true;
