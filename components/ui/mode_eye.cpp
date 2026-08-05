@@ -16,18 +16,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 #include "esp_log.h"
 
+#include "colors.h"
 #include "config.h"
 
 static const char *TAG = "mode_eye";
 
 namespace
 {
-
-constexpr uint16_t color_white = 0xFFFF;
-constexpr uint16_t color_black = 0x0000;
 
 void clamp_to_circle(float &x, float &y)
 {
@@ -84,7 +83,8 @@ class EyeMode : public DisplayMode
 {
   public:
     const char *name() const override { return "eye"; }
-    void enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right) override;
+    void enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
+               std::span<uint16_t> scanline) override;
     void render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
                 const ModeFrame &frame) override;
     void leave() override;
@@ -92,6 +92,7 @@ class EyeMode : public DisplayMode
   private:
     esp_lcd_panel_handle_t left_{};
     esp_lcd_panel_handle_t right_{};
+    std::span<uint16_t> scanline_{};
     int dot_x_{-1};
     int dot_y_{-1};
     int dot_r_{};
@@ -99,22 +100,13 @@ class EyeMode : public DisplayMode
     float cur_x_{};
     float cur_y_{};
     float cur_r_{};
-    alignas(4) uint16_t dma_line_[cfg::lcd::h_res]{};
 
-    void fill_panel(esp_lcd_panel_handle_t panel, uint16_t color);
     void move_dot_on_panel(esp_lcd_panel_handle_t panel, int ox, int oy, int orad, int nx, int ny,
                            int nrad);
     void draw_filled_circle(esp_lcd_panel_handle_t panel, int cx, int cy, int radius,
                             uint16_t color);
     void set_dot(int x, int y, int radius);
 };
-
-void EyeMode::fill_panel(esp_lcd_panel_handle_t panel, uint16_t color)
-{
-    std::fill(std::begin(dma_line_), std::end(dma_line_), color);
-    for (int y = 0; y < cfg::lcd::v_res; ++y)
-        esp_lcd_panel_draw_bitmap(panel, 0, y, cfg::lcd::h_res, y + 1, dma_line_);
-}
 
 void EyeMode::move_dot_on_panel(esp_lcd_panel_handle_t panel, int ox, int oy, int orad, int nx,
                                 int ny, int nrad)
@@ -143,9 +135,9 @@ void EyeMode::move_dot_on_panel(esp_lcd_panel_handle_t panel, int ox, int oy, in
         {
             int x = bx0 + i;
             int dx = x - nx, dy = y - ny;
-            dma_line_[i] = (dx * dx + dy * dy <= nr2) ? color_black : color_white;
+            scanline_[i] = (dx * dx + dy * dy <= nr2) ? colors::black : colors::white;
         }
-        esp_lcd_panel_draw_bitmap(panel, bx0, y, bx1 + 1, y + 1, dma_line_);
+        esp_lcd_panel_draw_bitmap(panel, bx0, y, bx1 + 1, y + 1, scanline_.data());
     }
 }
 
@@ -177,8 +169,8 @@ void EyeMode::draw_filled_circle(esp_lcd_panel_handle_t panel, int cx, int cy, i
             continue;
         const int n = draw_x1 - draw_x0 + 1;
         for (int i = 0; i < n; ++i)
-            dma_line_[i] = color;
-        esp_lcd_panel_draw_bitmap(panel, draw_x0, y, draw_x1 + 1, y + 1, dma_line_);
+            scanline_[i] = color;
+        esp_lcd_panel_draw_bitmap(panel, draw_x0, y, draw_x1 + 1, y + 1, scanline_.data());
     }
 }
 
@@ -207,8 +199,8 @@ void EyeMode::set_dot(int x, int y, int radius)
     }
     else
     {
-        draw_filled_circle(left_, x, y, radius, color_black);
-        draw_filled_circle(right_, x, y, radius, color_black);
+        draw_filled_circle(left_, x, y, radius, colors::black);
+        draw_filled_circle(right_, x, y, radius, colors::black);
     }
     dot_x_ = x;
     dot_y_ = y;
@@ -216,10 +208,12 @@ void EyeMode::set_dot(int x, int y, int radius)
     dot_valid_ = true;
 }
 
-void EyeMode::enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right)
+void EyeMode::enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
+                    std::span<uint16_t> scanline)
 {
     left_ = left;
     right_ = right;
+    scanline_ = scanline;
     dot_valid_ = false;
     dot_x_ = -1;
     dot_y_ = -1;
@@ -228,8 +222,8 @@ void EyeMode::enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right)
     cur_y_ = static_cast<float>(cfg::lcd::v_res / 2);
     cur_r_ = static_cast<float>(cfg::dot::radius_min);
 
-    fill_panel(left_, color_white);
-    fill_panel(right_, color_white);
+    fill_panel(left_, colors::white, scanline_);
+    fill_panel(right_, colors::white, scanline_);
 
     set_dot(static_cast<int>(cur_x_), static_cast<int>(cur_y_), static_cast<int>(cur_r_));
     ESP_LOGI(TAG, "entered eye mode");

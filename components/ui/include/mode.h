@@ -14,7 +14,12 @@
 
 #pragma once
 
+#include <algorithm>
+#include <span>
+
 #include "esp_lcd_panel_ops.h"
+
+#include "config.h"
 #include "mode_frame.h"
 
 class DisplayMode
@@ -22,11 +27,19 @@ class DisplayMode
   public:
     virtual ~DisplayMode() = default;
     virtual const char *name() const = 0;
-    virtual void enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right) = 0;
+    virtual void enter(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
+                       std::span<uint16_t> scanline) = 0;
     virtual void render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right,
                         const ModeFrame &frame) = 0;
     virtual void leave() = 0;
 };
+
+inline void fill_panel(esp_lcd_panel_handle_t panel, uint16_t color, std::span<uint16_t> scanline)
+{
+    std::fill(scanline.begin(), scanline.end(), color);
+    for (int y = 0; y < cfg::lcd::v_res; ++y)
+        esp_lcd_panel_draw_bitmap(panel, 0, y, cfg::lcd::h_res, y + 1, scanline.data());
+}
 
 DisplayMode &eye_mode();
 DisplayMode &radar_mode();

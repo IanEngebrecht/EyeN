@@ -16,8 +16,11 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <numbers>
+
+#include "ld2450.h"
 
 #include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
@@ -61,11 +64,6 @@ radar::FilterConfig s_filter = {
 
 radar::PersistSlot s_persist[Ld2450::target_count]{};
 
-int abs_speed_cm_s(const Target &t)
-{
-    return t.speed_cm_s < 0 ? -t.speed_cm_s : t.speed_cm_s;
-}
-
 TickType_t random_hold_ticks()
 {
     const uint32_t span = static_cast<uint32_t>(cfg::gaze::hold_max_ms - cfg::gaze::hold_min_ms);
@@ -108,7 +106,7 @@ bool select_attention_target(std::span<const Target> tgt, Target &out)
     const bool focus_valid =
         s_focus_idx >= 0 && s_focus_idx < Ld2450::target_count && tgt[s_focus_idx].valid;
     const bool focus_moving =
-        focus_valid && abs_speed_cm_s(tgt[s_focus_idx]) >= cfg::gaze::motion_cm_s;
+        focus_valid && std::abs(tgt[s_focus_idx].speed_cm_s) >= cfg::gaze::motion_cm_s;
 
     if (focus_moving)
     {
@@ -122,7 +120,7 @@ bool select_attention_target(std::span<const Target> tgt, Target &out)
     for (int k = 0; k < n; ++k)
     {
         int i = valid[k];
-        int spd = abs_speed_cm_s(tgt[i]);
+        int spd = std::abs(tgt[i].speed_cm_s);
         if (spd >= cfg::gaze::motion_cm_s && spd > mover_spd)
         {
             mover = i;
@@ -342,7 +340,7 @@ void build_mode_frame(const radar::Gaze &g, ModeFrame &mf)
     mf.targets = {};
     if (g.slot_count > 0)
     {
-        for (int i = 0; i < Ld2450::target_count; ++i)
+        for (int i = 0; i < mode_frame_max_targets; ++i)
             mf.targets[i] = g.slots[0].targets[i];
     }
 
@@ -350,7 +348,7 @@ void build_mode_frame(const radar::Gaze &g, ModeFrame &mf)
     {
         mf.primary = g.primary;
         mf.primary_idx = 0;
-        for (int i = 0; i < Ld2450::target_count; ++i)
+        for (int i = 0; i < mode_frame_max_targets; ++i)
         {
             if (mf.targets[i].valid && mf.targets[i].x_mm == g.primary.x_mm &&
                 mf.targets[i].y_mm == g.primary.y_mm)
@@ -382,7 +380,7 @@ void log_frame(const radar::Gaze &g)
     {
         const radar::SlotInfo *sl = &g.slots[s];
         pos += snprintf(buf + pos, cap - pos, " %s=%d:", sl->name, sl->target_count);
-        for (int t = 0; t < Ld2450::target_count && pos < cap; ++t)
+        for (int t = 0; t < mode_frame_max_targets && pos < cap; ++t)
         {
             if (t > 0)
                 buf[pos++] = '|';

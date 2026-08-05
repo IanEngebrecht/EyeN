@@ -28,9 +28,7 @@
 
 #include "config.h"
 #include "display.h"
-#include "ld2450.h"
 #include "mode.h"
-#include "mode_frame.h"
 #include "radar_stack.h"
 #include "rtos/queue.h"
 #include "rtos/task.h"
@@ -194,10 +192,7 @@ void poll_uart0_commands()
 
 Display s_display;
 
-std::array<DisplayMode *, 2> s_modes = {
-    &eye_mode(),
-    &radar_mode(),
-};
+auto s_modes = std::array{&eye_mode(), &radar_mode()};
 
 int s_render_mode_idx = eye_mode_idx;
 
@@ -271,7 +266,7 @@ void switch_render_mode(int new_idx)
 
     s_modes[s_render_mode_idx]->leave();
     s_render_mode_idx = new_idx;
-    s_modes[s_render_mode_idx]->enter(left, right);
+    s_modes[s_render_mode_idx]->enter(left, right, s_display.scanline_buf());
     ESP_LOGI(TAG, "$MODE %s", s_modes[s_render_mode_idx]->name());
     reset_azimuth_coast();
 }
@@ -281,7 +276,7 @@ void switch_render_mode(int new_idx)
     esp_lcd_panel_handle_t left = s_display.left();
     esp_lcd_panel_handle_t right = s_display.right();
 
-    s_modes[s_render_mode_idx]->enter(left, right);
+    s_modes[s_render_mode_idx]->enter(left, right, s_display.scanline_buf());
     ESP_LOGI(TAG, "$MODE %s", s_modes[s_render_mode_idx]->name());
 
     ModeFrame mf{};
