@@ -18,7 +18,6 @@
 #include <cstdint>
 
 #include "esp_err.h"
-#include "ld2450.h"
 #include "mode_frame.h"
 #include "radar_util.h"
 #include "rtos/queue.h"
@@ -32,7 +31,7 @@ struct SlotInfo
 {
     const char *name{};
     int target_count{};
-    Target targets[Ld2450::target_count]{};
+    Target targets[mode_frame_max_targets]{};
 };
 
 struct Gaze

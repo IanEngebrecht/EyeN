@@ -46,7 +46,7 @@ void filter_targets(std::span<Target> tgt, std::span<PersistSlot> persist, const
             continue;
         }
 
-        int abs_spd = tgt[i].speed_cm_s < 0 ? -tgt[i].speed_cm_s : tgt[i].speed_cm_s;
+        int abs_spd = std::abs(tgt[i].speed_cm_s);
 
         if (min_spd > 0 && abs_spd < min_spd)
         {

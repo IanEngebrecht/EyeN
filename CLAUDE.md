@@ -24,6 +24,7 @@ ESP-IDF component-based layout. Each component has its own `CMakeLists.txt`, pub
 ```
 components/
   config/     Header-only shared configuration (pins, tuning constants)
+  types/      Header-only shared data types (Target, ModeFrame, colors)
   drivers/    Hardware abstraction: display (SPI + GC9A01), ld2450 (UART radar)
   radar/      Sensor processing: target filtering, multi-target attention, gaze computation
   rtos/       Header-only C++ wrappers for FreeRTOS static primitives (Task, Queue, Mutex)
@@ -33,7 +34,7 @@ docs/         Log message reference
 tools/        Python visualization/tuning tool (not part of firmware)
 ```
 
-Dependency graph: `config ← drivers ← radar ← main`, `config ← drivers ← ui ← main`, `rtos ← radar`, `rtos ← main`.
+Dependency graph: `config ← types ← drivers ← radar ← main`, `config ← types ← ui ← main`, `rtos ← radar`, `rtos ← main`.
 
 The radar component has two backends selected via `RADAR_SRC` in `components/radar/CMakeLists.txt`:
 - `radar_stack_single.cpp` (default) — single sensor + potentiometer vertical

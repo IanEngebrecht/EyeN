@@ -3,11 +3,13 @@
 #include <array>
 #include <cstdint>
 
-#include "ld2450.h"
+#include "target.h"
+
+inline constexpr int mode_frame_max_targets = 3;
 
 struct ModeFrame
 {
-    std::array<Target, Ld2450::target_count> targets{};
+    std::array<Target, mode_frame_max_targets> targets{};
     int target_count{};
     int primary_idx{-1};
     Target primary{};
