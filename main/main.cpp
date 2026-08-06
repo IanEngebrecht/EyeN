@@ -308,8 +308,6 @@ void switch_render_mode(int new_idx)
 /* ── Mode switching (control plane) ──────────────────────────────── */
 
 int s_ctrl_mode_idx = eye_mode_idx;
-bool s_pot_at_limit = false;
-
 void request_mode_switch(int new_idx)
 {
     if (new_idx == s_ctrl_mode_idx)
@@ -317,26 +315,6 @@ void request_mode_switch(int new_idx)
     s_ctrl_mode_idx = new_idx;
     ModeSwitch ms{new_idx};
     s_mode_q.send(ms, pdMS_TO_TICKS(50));
-}
-
-void poll_pot_mode_switch()
-{
-    float frac = s_pot_frac.load(std::memory_order_relaxed);
-    bool near_limit = frac <= cfg::pot::limit_enter || frac >= (1.0f - cfg::pot::limit_enter);
-    bool clear_limit = frac > cfg::pot::limit_exit && frac < (1.0f - cfg::pot::limit_exit);
-
-    if (!s_pot_at_limit && near_limit)
-    {
-        s_pot_at_limit = true;
-        if (s_ctrl_mode_idx != radar_mode_idx)
-            request_mode_switch(radar_mode_idx);
-    }
-    else if (s_pot_at_limit && clear_limit)
-    {
-        s_pot_at_limit = false;
-        if (s_ctrl_mode_idx != eye_mode_idx)
-            request_mode_switch(eye_mode_idx);
-    }
 }
 
 } // anonymous namespace
@@ -377,8 +355,6 @@ extern "C" void app_main(void)
             int next = (s_ctrl_mode_idx + 1) % static_cast<int>(s_modes.size());
             request_mode_switch(next);
         }
-
-        poll_pot_mode_switch();
 
         if ((int32_t)(xTaskGetTickCount() - next_health) >= 0)
         {

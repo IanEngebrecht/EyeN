@@ -84,14 +84,14 @@ Maps ADC → sensor mount height (default 0–2000 mm). Assumed person aim heigh
 
 | Button | ESP32 |
 |--------|-------|
-| One leg | **D19** (GPIO 19) |
+| One leg | **D21** (GPIO 21) |
 | Other leg | **GND** |
 
 Internal pull-up is enabled in firmware. No external resistor needed. Pressing the button cycles through display modes.
 
 ## Display modes
 
-Press the button on **D19** to cycle. Current modes:
+Press the button on **D21** to cycle. Current modes:
 
 1. **Eye** (default) — white background, black pupil tracks the nearest/moving person.
 2. **Radar** — green-on-black flight-radar aesthetic:
