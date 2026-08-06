@@ -5,43 +5,42 @@
 The firmware is organized into four layers. Dependencies flow strictly downward — a component may only depend on components in the same layer or below. This means, for example, the LD2450 UART driver cannot depend on the UI module, and neither `radar` nor `ui` can depend on each other.
 
 ```mermaid
-block-beta
-    columns 1
-
-    block:APP["Application"]
-        main["main"]
+graph TD
+    subgraph APP["Application"]
+        main
     end
 
-    block:LOGIC["Application Logic"]
-        radar["radar"]
-        ui["ui"]
+    subgraph LOGIC["Application Logic"]
+        radar
+        ui
     end
 
-    block:HAL["Hardware Abstraction"]
-        drivers["drivers"]
+    subgraph HAL["Hardware Abstraction"]
+        drivers
     end
 
-    block:FOUNDATION["Foundation"]
-        config["config"]
-        types["types"]
-        rtos["rtos"]
+    subgraph FOUND["Foundation (header-only)"]
+        config
+        types
+        rtos
     end
 
-    main --> radar
-    main --> ui
+    main --> radar & ui
     radar --> drivers
-    drivers --> config
-    drivers --> types
     radar --> rtos
+    drivers --> config & types
+    ui --> config & types
 ```
 
-**Application** — `main` is the entry point. It initializes hardware, spawns FreeRTOS tasks, and runs the control-plane loop (button polling, UART commands, health logging). It depends on both application-logic components but they do not depend on it.
-
-**Application Logic** — `radar` and `ui` are peers that cannot depend on each other. They communicate only through the queues wired up by `main`. `radar` owns sensor reading, target filtering, and gaze computation. `ui` owns the `DisplayMode` interface and concrete renderers (`EyeMode`, `RadarMode`).
-
-**Hardware Abstraction** — `drivers` wraps hardware I/O behind C++ interfaces: `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar protocol). No processing logic — just read/write operations on peripherals.
-
-**Foundation** — header-only components with no compiled code and no dependencies on upper layers. `config` defines pin assignments and tuning constants. `types` defines shared vocabulary types (`Target`, `ModeFrame`, colors). `rtos` provides C++ wrappers (`Task`, `Queue`, `Mutex`) that enforce static allocation of FreeRTOS primitives. Any component in any layer may depend on these.
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| **Application** | `main` | Entry point: initializes hardware, spawns FreeRTOS tasks, runs the control-plane loop (button polling, UART commands, health logging). Depends on both application-logic components but they do not depend on it. |
+| **Application Logic** | `radar` | Sensor reading, target filtering, multi-target attention selection, gaze computation (azimuth + elevation). Owns the sensor read loop. |
+| | `ui` | `DisplayMode` interface and concrete renderers (`EyeMode`, `RadarMode`). Pure rendering — no sensor or hardware knowledge. Peer to `radar`; the two cannot depend on each other and communicate only through queues wired by `main`. |
+| **Hardware Abstraction** | `drivers` | `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar protocol). Hardware I/O only — no processing logic. |
+| **Foundation** | `config` | Pin assignments, tuning constants, sensor array definition. Single file to edit for hardware changes. |
+| | `types` | `Target`, `ModeFrame`, color constants. Shared vocabulary types with no logic. |
+| | `rtos` | `rtos::Task`, `rtos::Queue`, `rtos::Mutex` — C++ wrappers enforcing static allocation of FreeRTOS primitives. Any layer may depend on foundation components. |
 
 ## Concurrency Model
 
@@ -49,21 +48,19 @@ Three execution contexts run concurrently. The radar task is pinned to core 1 fo
 
 ```mermaid
 graph LR
-    subgraph CORE0["Core 0"]
-        direction TB
-        RENDER["render\npri 5 · 4 KB"]
-        CTRL["app_main\npri 1"]
-    end
+    CTRL["app_main · pri 1"]:::core0
+    RENDER["render · pri 5 · 4 KB"]:::core0
+    RADAR["radar · pri 6 · 4 KB"]:::core1
 
-    subgraph CORE1["Core 1"]
-        direction TB
-        RADAR["radar\npri 6 · 4 KB"]
-    end
+    RADAR -->|frame_q| RENDER
+    CTRL -->|cmd_q| RADAR
+    CTRL -->|mode_q| RENDER
 
-    RADAR -- "frame_q\nQueue‹ModeFrame, 2›" --> RENDER
-    CTRL -- "cmd_q\nQueue‹DevCommand, 4›" --> RADAR
-    CTRL -- "mode_q\nQueue‹ModeSwitch, 1›" --> RENDER
+    classDef core0 fill:#3b82f6,stroke:#1e40af,color:#fff
+    classDef core1 fill:#f59e0b,stroke:#b45309,color:#fff
 ```
+
+Legend: <span style="color:#3b82f6">**blue = core 0**</span>, <span style="color:#f59e0b">**amber = core 1**</span>
 
 | Channel | Type | Direction | Purpose |
 |---------|------|-----------|---------|
