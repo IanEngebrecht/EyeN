@@ -39,7 +39,7 @@ graph LR
     BUS -->|D5 CS| LEFT[Left GC9A01]
     BUS -->|D15 CS| RIGHT[Right GC9A01]
     ESP32 -->|UART2| RADAR[LD2450 Radar]
-    ESP32 -->|D34 ADC| POT[Height Pot]
+    ESP32 -->|D34 ADC| POT[Potentiometer]
     ESP32 -->|D21| BTN[Mode Button]
 ```
 
