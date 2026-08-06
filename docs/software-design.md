@@ -59,9 +59,9 @@ graph LR
         RADAR["radar\npri 6 · 4 KB"]
     end
 
-    RADAR -- "frame_q" --> RENDER
-    CTRL -- "cmd_q" --> RADAR
-    CTRL -- "mode_q" --> RENDER
+    RADAR -- "frame_q\nQueue‹ModeFrame, 2›" --> RENDER
+    CTRL -- "cmd_q\nQueue‹DevCommand, 4›" --> RADAR
+    CTRL -- "mode_q\nQueue‹ModeSwitch, 1›" --> RENDER
 ```
 
 The queue arrows connect between tasks across cores: `frame_q` flows from `radar` to `render`, `cmd_q` from `app_main` to `radar`, and `mode_q` from `app_main` to `render`.
