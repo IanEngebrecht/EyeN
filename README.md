@@ -140,16 +140,6 @@ Sliders control LD2450 parameters in real time:
 
 Settings persist across power cycles on the LD2450.
 
-## Restoring multi-sensor (pitch stack)
-
-The pitch-stacked fusion lives in `components/radar/radar_stack_multi.cpp` but is **not linked** by default.
-
-1. In [`components/radar/CMakeLists.txt`](components/radar/CMakeLists.txt), set `RADAR_SRC` to `radar_stack_multi.cpp`.
-2. In [`components/config/include/config.h`](components/config/include/config.h), restore the commented two-row `CFG_SENSORS` (lower ~−20°, upper ~+20° on UART2 + UART1).
-3. Rebuild. Vertical then comes from visibility bands again; the potentiometer is unused in that build.
-
-Optional later: third (mid) sensor + 74HC4051 — multi code already has `mux_channel` hooks.
-
 ## Documentation
 
 - [Software Design](docs/software-design.md) — architecture, concurrency model, class diagrams, sequence diagrams

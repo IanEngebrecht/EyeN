@@ -30,15 +30,13 @@ components/
   rtos/       Header-only C++ wrappers for FreeRTOS static primitives (Task, Queue, Mutex)
   ui/         Display mode renderers: eye tracking, radar PPI sweep
 main/         Application entry point (app_main, task spawning, control plane)
-docs/         Log message reference
+docs/         Software design doc, log message reference
 tools/        Python visualization/tuning tool (not part of firmware)
 ```
 
 Dependency graph: `config ← types ← drivers ← radar ← main`, `config ← types ← ui ← main`, `rtos ← radar`, `rtos ← main`.
 
-The radar component has two backends selected via `RADAR_SRC` in `components/radar/CMakeLists.txt`:
-- `radar_stack_single.cpp` (default) — single sensor + potentiometer vertical
-- `radar_stack_multi.cpp` (archived) — pitch-stacked multi-sensor fusion
+The radar component lives in `radar_stack_single.cpp` — single LD2450 sensor with potentiometer-based vertical estimate.
 
 ## Conventions
 
@@ -56,4 +54,3 @@ The radar component has two backends selected via `RADAR_SRC` in `components/rad
 - **Add a display mode**: create `components/ui/mode_*.cpp`, implement `display_mode_t`, add to `SRCS` in `components/ui/CMakeLists.txt`, register in `s_modes[]` in `main/main.cpp`
 - **Change pin assignments**: edit `components/config/include/config.h`
 - **Tune radar filtering**: adjust `CFG_FILTER_*` constants in config.h, or use `tools/replay.py --live` for real-time tuning
-- **Switch radar backend**: change `RADAR_SRC` in `components/radar/CMakeLists.txt`
