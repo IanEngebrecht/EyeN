@@ -29,7 +29,7 @@ Working prototype pinout (matches `components/config/include/config.h`). Common 
    Radar TX→ESP ────┤ RX2 (GPIO16)                            │
    ESP→Radar RX ────┤ TX2 (GPIO17)                            │
    Pot wiper ───────┤ D34                                     │
-   Button ──────────┤ D19 (other leg → GND)                   │
+   Button ──────────┤ D21 (other leg → GND)                   │
                     └─────────────────────────────────────────┘
 
    3V3 ──┬── Left GC9A01 VCC ── Right GC9A01 VCC ── Pot end A
@@ -41,7 +41,7 @@ Working prototype pinout (matches `components/config/include/config.h`). Common 
    D5  ──── Left CS             D15 ──── Right CS
    RX2 ←── LD2450 TX            TX2 ──→ LD2450 RX
    D34 ←── Pot wiper
-   D19 ←── Button (to GND)
+   D21 ←── Button (to GND)
 ```
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
