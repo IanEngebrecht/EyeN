@@ -48,19 +48,23 @@ Three execution contexts run concurrently. The radar task is pinned to core 1 fo
 
 ```mermaid
 graph LR
-    CTRL["app_main · pri 1"]:::core0
-    RENDER["render · pri 5 · 4 KB"]:::core0
-    RADAR["radar · pri 6 · 4 KB"]:::core1
+    subgraph CORE0["Core 0"]
+        direction TB
+        CTRL["app_main\npri 1"]
+        RENDER["render\npri 5 · 4 KB"]
+    end
 
-    RADAR -->|frame_q| RENDER
-    CTRL -->|cmd_q| RADAR
-    CTRL -->|mode_q| RENDER
+    subgraph CORE1["Core 1"]
+        direction TB
+        RADAR["radar\npri 6 · 4 KB"]
+    end
 
-    classDef core0 fill:#3b82f6,stroke:#1e40af,color:#fff
-    classDef core1 fill:#f59e0b,stroke:#b45309,color:#fff
+    RADAR -- "frame_q" --> RENDER
+    CTRL -- "cmd_q" --> RADAR
+    CTRL -- "mode_q" --> RENDER
 ```
 
-Legend: <span style="color:#3b82f6">**blue = core 0**</span>, <span style="color:#f59e0b">**amber = core 1**</span>
+The queue arrows connect between tasks across cores: `frame_q` flows from `radar` to `render`, `cmd_q` from `app_main` to `radar`, and `mode_q` from `app_main` to `render`.
 
 | Channel | Type | Direction | Purpose |
 |---------|------|-----------|---------|
