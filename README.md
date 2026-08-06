@@ -149,3 +149,8 @@ The pitch-stacked fusion lives in `components/radar/radar_stack_multi.cpp` but i
 3. Rebuild. Vertical then comes from visibility bands again; the potentiometer is unused in that build.
 
 Optional later: third (mid) sensor + 74HC4051 — multi code already has `mux_channel` hooks.
+
+## Documentation
+
+- [Software Design](docs/software-design.md) — architecture, concurrency model, class diagrams, sequence diagrams
+- [Log Messages](docs/log-messages.md) — reference for `$FRAME`, `$LOST`, `$MODE`, and other log tags
