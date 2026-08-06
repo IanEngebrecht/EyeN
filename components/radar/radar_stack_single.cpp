@@ -347,15 +347,18 @@ void build_mode_frame(const radar::Gaze &g, ModeFrame &mf)
     if (g.human)
     {
         mf.primary = g.primary;
-        mf.primary_idx = 0;
+        mf.primary_idx = -1;
+        int rank = 0;
         for (int i = 0; i < mode_frame_max_targets; ++i)
         {
-            if (mf.targets[i].valid && mf.targets[i].x_mm == g.primary.x_mm &&
-                mf.targets[i].y_mm == g.primary.y_mm)
+            if (!mf.targets[i].valid)
+                continue;
+            if (mf.targets[i].x_mm == g.primary.x_mm && mf.targets[i].y_mm == g.primary.y_mm)
             {
-                mf.primary_idx = i;
+                mf.primary_idx = rank;
                 break;
             }
+            rank++;
         }
     }
     else
