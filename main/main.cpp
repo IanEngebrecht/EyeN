@@ -317,7 +317,6 @@ void request_mode_switch(int new_idx)
     s_mode_q.send(ms, pdMS_TO_TICKS(50));
 }
 
-
 } // anonymous namespace
 
 extern "C" void app_main(void)
@@ -356,7 +355,6 @@ extern "C" void app_main(void)
             int next = (s_ctrl_mode_idx + 1) % static_cast<int>(s_modes.size());
             request_mode_switch(next);
         }
-
 
         if ((int32_t)(xTaskGetTickCount() - next_health) >= 0)
         {
