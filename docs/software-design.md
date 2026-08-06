@@ -1,42 +1,47 @@
 # Software Design
 
-## Component Architecture
+## Layered Architecture
 
-The firmware is structured as ESP-IDF components with explicit dependency declarations. Header-only components (`config`, `types`, `rtos`) carry no compiled code and exist purely to share declarations.
+The firmware is organized into four layers. Dependencies flow strictly downward — a component may only depend on components in the same layer or below. This means, for example, the LD2450 UART driver cannot depend on the UI module, and neither `radar` nor `ui` can depend on each other.
 
 ```mermaid
-graph TD
+block-beta
+    columns 1
+
+    block:APP["Application"]
+        main["main"]
+    end
+
+    block:LOGIC["Application Logic"]
+        radar["radar"]
+        ui["ui"]
+    end
+
+    block:HAL["Hardware Abstraction"]
+        drivers["drivers"]
+    end
+
+    block:FOUNDATION["Foundation"]
+        config["config"]
+        types["types"]
+        rtos["rtos"]
+    end
+
     main --> radar
     main --> ui
-    main --> drivers
-    main --> rtos
-
     radar --> drivers
-    radar --> rtos
-
     drivers --> config
     drivers --> types
-
-    radar --> config
-    radar --> types
-
-    ui --> config
-    ui --> types
-
-    style config fill:#4a6,stroke:#333,color:#fff
-    style types fill:#4a6,stroke:#333,color:#fff
-    style rtos fill:#4a6,stroke:#333,color:#fff
+    radar --> rtos
 ```
 
-| Component | Kind | Responsibility |
-|-----------|------|----------------|
-| **config** | header-only | Pin assignments, tuning constants, sensor array definition. Single file to edit for hardware changes. |
-| **types** | header-only | `Target`, `ModeFrame`, color constants. Shared vocabulary types with no logic. |
-| **rtos** | header-only | `rtos::Task`, `rtos::Queue`, `rtos::Mutex` — C++ wrappers enforcing static allocation of FreeRTOS primitives. |
-| **drivers** | compiled | `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar driver). Hardware I/O only, no processing logic. |
-| **radar** | compiled | Target filtering, persistence, multi-target attention selection, gaze computation (azimuth + elevation). Owns the sensor read loop. |
-| **ui** | compiled | `DisplayMode` interface and concrete modes (`EyeMode`, `RadarMode`). Pure rendering — no sensor or hardware knowledge. |
-| **main** | compiled | `app_main` entry point: initializes hardware, spawns tasks, runs the control-plane loop (button polling, UART commands, health logging). |
+**Application** — `main` is the entry point. It initializes hardware, spawns FreeRTOS tasks, and runs the control-plane loop (button polling, UART commands, health logging). It depends on both application-logic components but they do not depend on it.
+
+**Application Logic** — `radar` and `ui` are peers that cannot depend on each other. They communicate only through the queues wired up by `main`. `radar` owns sensor reading, target filtering, and gaze computation. `ui` owns the `DisplayMode` interface and concrete renderers (`EyeMode`, `RadarMode`).
+
+**Hardware Abstraction** — `drivers` wraps hardware I/O behind C++ interfaces: `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar protocol). No processing logic — just read/write operations on peripherals.
+
+**Foundation** — header-only components with no compiled code and no dependencies on upper layers. `config` defines pin assignments and tuning constants. `types` defines shared vocabulary types (`Target`, `ModeFrame`, colors). `rtos` provides C++ wrappers (`Task`, `Queue`, `Mutex`) that enforce static allocation of FreeRTOS primitives. Any component in any layer may depend on these.
 
 ## Concurrency Model
 
@@ -44,18 +49,20 @@ Three execution contexts run concurrently. The radar task is pinned to core 1 fo
 
 ```mermaid
 graph LR
-    subgraph "Core 1"
-        RADAR["<b>radar</b>\npri 6 · 4 KB stack"]
+    subgraph CORE0["Core 0"]
+        direction TB
+        RENDER["render\npri 5 · 4 KB"]
+        CTRL["app_main\npri 1"]
     end
 
-    subgraph "Core 0"
-        RENDER["<b>render</b>\npri 5 · 4 KB stack"]
-        CTRL["<b>app_main</b>\npri 1 · control plane"]
+    subgraph CORE1["Core 1"]
+        direction TB
+        RADAR["radar\npri 6 · 4 KB"]
     end
 
-    RADAR -- "frame_q\nQueue&lt;ModeFrame, 2&gt;" --> RENDER
-    CTRL -- "cmd_q\nQueue&lt;DevCommand, 4&gt;" --> RADAR
-    CTRL -- "mode_q\nQueue&lt;ModeSwitch, 1&gt;" --> RENDER
+    RADAR -- "frame_q\nQueue‹ModeFrame, 2›" --> RENDER
+    CTRL -- "cmd_q\nQueue‹DevCommand, 4›" --> RADAR
+    CTRL -- "mode_q\nQueue‹ModeSwitch, 1›" --> RENDER
 ```
 
 | Channel | Type | Direction | Purpose |
