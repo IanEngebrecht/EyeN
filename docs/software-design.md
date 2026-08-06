@@ -36,8 +36,8 @@ graph TD
 |-------|-----------|----------------|
 | **Application** | `main` | Entry point: initializes hardware, spawns FreeRTOS tasks, runs the control-plane loop (button polling, UART commands, health logging). Depends on both application-logic components but they do not depend on it. |
 | **Application Logic** | `radar` | Sensor reading, target filtering, multi-target attention selection, gaze computation (azimuth + elevation). Owns the sensor read loop. |
-| | `ui` | `DisplayMode` interface and concrete renderers (`EyeMode`, `RadarMode`). Pure rendering — no sensor or hardware knowledge. Peer to `radar`; the two cannot depend on each other and communicate only through queues wired by `main`. |
-| **Hardware Abstraction** | `drivers` | `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar protocol). Hardware I/O only — no processing logic. |
+| | `ui` | `DisplayMode` interface and concrete renderers (`EyeMode`, `RadarMode`). Pure rendering — no sensor or hardware knowledge. Peer to `radar`; the two cannot depend on each other and communicate only through queues wired by `main`. Note: `ui` does not depend on `drivers` — `main` passes `esp_lcd_panel_handle_t` handles into the modes, and they draw using ESP-IDF's generic `esp_lcd` panel API. This keeps display modes decoupled from panel-specific initialization. |
+| **Hardware Abstraction** | `drivers` | `Display` (SPI bus + dual GC9A01 panels) and `Ld2450` (UART radar protocol). Hardware I/O only — no processing logic. The GC9A01 driver is an ESP-IDF managed component (`esp_lcd_gc9a01`) used privately by `Display`; upper layers never touch it directly. |
 | **Foundation** | `config` | Pin assignments, tuning constants, sensor array definition. Single file to edit for hardware changes. |
 | | `types` | `Target`, `ModeFrame`, color constants. Shared vocabulary types with no logic. |
 | | `rtos` | `rtos::Task`, `rtos::Queue`, `rtos::Mutex` — C++ wrappers enforcing static allocation of FreeRTOS primitives. Any layer may depend on foundation components. |
