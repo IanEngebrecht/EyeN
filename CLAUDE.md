@@ -54,3 +54,7 @@ The radar component lives in `radar_stack_single.cpp` — single LD2450 sensor w
 - **Add a display mode**: create `components/ui/mode_*.cpp`, implement `display_mode_t`, add to `SRCS` in `components/ui/CMakeLists.txt`, register in `s_modes[]` in `main/main.cpp`
 - **Change pin assignments**: edit `components/config/include/config.h`
 - **Tune radar filtering**: adjust `CFG_FILTER_*` constants in config.h, or use `tools/replay.py --live` for real-time tuning
+
+## Documentation maintenance
+
+When making changes that affect architecture, component dependencies, data types, concurrency (tasks/queues), or control flow, update the corresponding sections in `docs/software-design.md`. This includes adding/removing components, changing inter-task communication, modifying public interfaces, or altering the startup sequence. Keep diagrams and prose in sync with the code.
