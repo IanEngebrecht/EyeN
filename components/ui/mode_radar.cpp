@@ -169,24 +169,6 @@ float angle_diff(float a, float b)
     return d;
 }
 
-void map_target_to_screen(const Target &t, float &out_angle, float &out_norm)
-{
-    float az_rad = std::atan2(static_cast<float>(t.x_mm), static_cast<float>(t.y_mm));
-    float az_deg = az_rad * (180.0f / std::numbers::pi_v<float>);
-    out_angle = fov_center_deg + az_deg;
-
-    float dist = static_cast<float>(t.distance_mm);
-    float min_d = static_cast<float>(cfg::filter::min_dist_mm);
-    float max_d = static_cast<float>(cfg::filter::max_dist_mm);
-    if (max_d <= min_d)
-        max_d = min_d + 1.0f;
-    out_norm = (dist - min_d) / (max_d - min_d);
-    if (out_norm < 0.0f)
-        out_norm = 0.0f;
-    if (out_norm > 1.0f)
-        out_norm = 1.0f;
-}
-
 uint8_t deg_to_lut(float deg)
 {
     float norm = deg / 360.0f;
@@ -218,8 +200,6 @@ class RadarMode : public DisplayMode
     struct RadarTarget
     {
         bool active{};
-        float angle_deg{};
-        float norm_dist{};
         int64_t lit_time_us{};
         int16_t x_mm{}, y_mm{};
         uint16_t distance_mm{};
@@ -240,8 +220,8 @@ class RadarMode : public DisplayMode
 
     float sweep_angle_now() const;
     void build_luts();
-    void update_targets(const ModeFrame &frame, float sweep_deg);
-    void render_left();
+    void update_targets(const ModeFrame &frame);
+    void render_left(float sweep_deg);
     void render_right(const ModeFrame &frame);
     void draw_char(esp_lcd_panel_handle_t panel, int cx, int cy, char ch, uint16_t color,
                    uint16_t bg, int scale);
@@ -285,35 +265,17 @@ void RadarMode::build_luts()
     }
 }
 
-void RadarMode::update_targets(const ModeFrame &frame, float sweep_deg)
+void RadarMode::update_targets(const ModeFrame &frame)
 {
-    const int64_t now_us = esp_timer_get_time();
     for (int i = 0; i < mode_frame_max_targets; ++i)
     {
-        if (i < frame.target_count && frame.targets[i].valid)
+        if (frame.targets[i].valid)
         {
-            float ang, nd;
-            map_target_to_screen(frame.targets[i], ang, nd);
-            const float lo = fov_center_deg - fov_half_deg;
-            const float hi = fov_center_deg + fov_half_deg;
-            if (ang < lo)
-                ang = lo;
-            if (ang > hi)
-                ang = hi;
             targets_[i].active = true;
-            targets_[i].angle_deg = ang;
-            targets_[i].norm_dist = nd;
             targets_[i].x_mm = frame.targets[i].x_mm;
             targets_[i].y_mm = frame.targets[i].y_mm;
             targets_[i].distance_mm = frame.targets[i].distance_mm;
             targets_[i].speed_cm_s = frame.targets[i].speed_cm_s;
-
-            float d = angle_diff(sweep_deg, ang);
-            float d_prev = angle_diff(last_sweep_deg_, ang);
-            if (d >= 0.0f && d < 30.0f && d_prev < 0.0f)
-            {
-                targets_[i].lit_time_us = now_us;
-            }
         }
         else
         {
@@ -322,11 +284,13 @@ void RadarMode::update_targets(const ModeFrame &frame, float sweep_deg)
     }
 }
 
-void RadarMode::render_left()
+void RadarMode::render_left(float sweep_deg)
 {
-    const float sweep_deg = sweep_angle_now();
     const int64_t now_us = esp_timer_get_time();
     uint8_t lut_sweep = deg_to_lut(sweep_deg);
+
+    const float max_d = static_cast<float>(cfg::filter::max_dist_mm);
+    constexpr float inner_ring = static_cast<float>(sweep_radius) / 3.0f;
 
     int tgt_x[mode_frame_max_targets], tgt_y[mode_frame_max_targets];
     for (int i = 0; i < mode_frame_max_targets; ++i)
@@ -337,16 +301,35 @@ void RadarMode::render_left()
             tgt_y[i] = -100;
             continue;
         }
-        float tang = targets_[i].angle_deg * deg2rad;
-        float td = targets_[i].norm_dist * static_cast<float>(sweep_radius);
-        tgt_x[i] = center_x + static_cast<int>(std::cos(tang) * td);
-        tgt_y[i] = center_y + static_cast<int>(std::sin(tang) * td);
+        float px = static_cast<float>(-targets_[i].x_mm) / max_d * static_cast<float>(sweep_radius);
+        float py = static_cast<float>(targets_[i].y_mm) / max_d * static_cast<float>(sweep_radius);
+        float pd = std::sqrt(px * px + py * py);
+        if (pd > 0.0f && pd < inner_ring)
+        {
+            float s = inner_ring / pd;
+            px *= s;
+            py *= s;
+        }
+        tgt_x[i] = center_x + static_cast<int>(px);
+        tgt_y[i] = center_y + static_cast<int>(py);
+
+        if (pd > 0.0f)
+        {
+            float ang = std::atan2(py, px);
+            if (ang < 0.0f)
+                ang += 2.0f * std::numbers::pi_v<float>;
+            float deg = ang * (180.0f / std::numbers::pi_v<float>);
+            float d = angle_diff(sweep_deg, deg);
+            float d_prev = angle_diff(last_sweep_deg_, deg);
+            if (d >= 0.0f && d < 30.0f && d_prev < 0.0f)
+                targets_[i].lit_time_us = now_us;
+        }
     }
 
     const float fov_lo_rad = (fov_center_deg - fov_half_deg) * deg2rad;
     const float fov_hi_rad = (fov_center_deg + fov_half_deg) * deg2rad;
-    const float lo_dx = std::cos(fov_lo_rad), lo_dy = std::sin(fov_lo_rad);
-    const float hi_dx = std::cos(fov_hi_rad), hi_dy = std::sin(fov_hi_rad);
+    const float lo_dx = std::cos(fov_lo_rad), lo_dy = -std::sin(fov_lo_rad);
+    const float hi_dx = std::cos(fov_hi_rad), hi_dy = -std::sin(fov_hi_rad);
     const float ring1 = sweep_radius / 3.0f;
     const float ring2 = sweep_radius * 2.0f / 3.0f;
     const float ring3 = static_cast<float>(sweep_radius);
@@ -386,7 +369,7 @@ void RadarMode::render_left()
             {
                 float px = static_cast<float>(x - center_x);
                 float py = static_cast<float>(y - center_y);
-                if (dist > 5.0f)
+                if (dist > 1.0f)
                 {
                     float cross_lo = std::fabs(px * lo_dy - py * lo_dx);
                     if (cross_lo < 1.5f && (px * lo_dx + py * lo_dy) > 0.0f)
@@ -428,9 +411,7 @@ void RadarMode::render_left()
                     if (age_frac > 1.0f)
                         age_frac = 1.0f;
                     uint8_t bright = static_cast<uint8_t>(255.0f * (1.0f - age_frac * 0.85f));
-                    uint16_t c = green_intensity(bright);
-                    if (c > scanline_[bx])
-                        scanline_[bx] = c;
+                    scanline_[bx] = green_intensity(bright);
                 }
             }
         }
@@ -563,13 +544,16 @@ void RadarMode::render(esp_lcd_panel_handle_t left, esp_lcd_panel_handle_t right
 {
     (void)left;
     (void)right;
-    if (frame.frame_id == last_render_frame_)
-        return;
-    last_render_frame_ = frame.frame_id;
 
-    update_targets(frame, sweep_angle_now());
-    render_left();
-    render_right(frame);
+    float sweep_deg = sweep_angle_now();
+    update_targets(frame);
+    render_left(sweep_deg);
+
+    if (frame.frame_id != last_render_frame_)
+    {
+        last_render_frame_ = frame.frame_id;
+        render_right(frame);
+    }
 }
 
 void RadarMode::leave()
