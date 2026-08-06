@@ -127,7 +127,7 @@ inline constexpr int s1_gpio = -1;
 
 namespace button
 {
-inline constexpr int gpio = 19; /* pull-up; button shorts to GND     */
+inline constexpr int gpio = 21; /* pull-up; button shorts to GND     */
 inline constexpr int debounce_ms = 200;
 } // namespace button
 
@@ -156,13 +156,6 @@ inline constexpr int mount_max_mm = 2000;  /* pot at 100% → sensor ~2 m up    
 inline constexpr int person_aim_mm = 1500; /* assumed torso/face height (mm)     */
 inline constexpr float smooth = 0.15f;     /* ADC lerp factor (0‥1)             */
 
-/* Pot-as-mode-switch (temporary stand-in until a physical button is wired):
- * turning the pot to either end past limit_enter switches to radar
- * mode; turning it back past limit_exit (from either end) returns
- * to eye mode. The gap between enter/exit is hysteresis so the mode doesn't
- * chatter if the pot rests right at the threshold. */
-inline constexpr float limit_enter = 0.04f; /* within this fraction of an end → radar mode */
-inline constexpr float limit_exit = 0.10f;  /* must move back in past this → eye mode */
 } // namespace pot
 
 /* ── Sensor array ────────────────────────────────────────────────── *

@@ -8,8 +8,7 @@ Connect with `idf.py monitor` or any serial terminal at 115200 baud.
 
 ## `$MODE`
 
-Emitted when the active display mode changes (button press, pot limit, or
-startup).
+Emitted when the active display mode changes (button press or startup).
 
 ```
 I (1080) EyeN: $MODE eye
