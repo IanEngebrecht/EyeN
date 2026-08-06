@@ -35,12 +35,6 @@ static const char *TAG = "radar_single";
 namespace
 {
 
-const cfg::SensorConfig sensor_cfg[] = {
-    cfg::sensors[0],
-};
-constexpr int sensor_count = static_cast<int>(sizeof(sensor_cfg) / sizeof(sensor_cfg[0]));
-
-int s_slot = -1;
 Ld2450 s_dev;
 Target s_targets[Ld2450::target_count]{};
 TickType_t s_last_ok_tick;
@@ -180,7 +174,7 @@ bool select_attention_target(std::span<const Target> tgt, Target &out)
     return true;
 }
 
-bool slot_is_current()
+bool data_is_current()
 {
     if (!s_has_data)
         return false;
@@ -269,16 +263,14 @@ esp_err_t do_update(radar::Gaze &out)
 
     pot_update();
 
-    if (!s_dev.valid() || s_slot < 0)
+    if (!s_dev.valid())
         return ESP_ERR_INVALID_STATE;
-
-    const cfg::SensorConfig *sc = &sensor_cfg[s_slot];
 
     std::array<Target, Ld2450::target_count> tmp{};
     esp_err_t err = s_dev.read_frame(tmp, cfg::frame::timeout_ms);
     if (err == ESP_OK)
     {
-        if (sc->inverted)
+        if (cfg::sensor.inverted)
         {
             for (auto &t : tmp)
                 t.x_mm = -t.x_mm;
@@ -291,22 +283,18 @@ esp_err_t do_update(radar::Gaze &out)
     }
     else if (err != ESP_ERR_TIMEOUT)
     {
-        ESP_LOGW(TAG, "%s frame: %s", sc->name, esp_err_to_name(err));
+        ESP_LOGW(TAG, "%s frame: %s", cfg::sensor.name, esp_err_to_name(err));
     }
 
     out.frame_id = s_frame_id;
 
-    radar::SlotInfo &info = out.slots[0];
-    info.name = sc->name;
-    if (slot_is_current())
+    if (data_is_current())
     {
-        std::memcpy(info.targets, s_targets, sizeof(info.targets));
-        info.target_count = radar::count_valid(s_targets);
+        std::memcpy(out.targets, s_targets, sizeof(out.targets));
+        out.total_targets = radar::count_valid(s_targets);
     }
-    out.slot_count = 1;
-    out.total_targets = info.target_count;
 
-    if (!slot_is_current())
+    if (!data_is_current())
     {
         out.human = false;
         return ESP_OK;
@@ -323,7 +311,6 @@ esp_err_t do_update(radar::Gaze &out)
     out.primary = focus;
     out.azimuth_deg = radar::target_azimuth_deg(focus);
     out.elevation_norm = elevation_from_distance(focus);
-    out.see_mask = 0x01;
     return ESP_OK;
 }
 
@@ -337,12 +324,8 @@ void build_mode_frame(const radar::Gaze &g, ModeFrame &mf)
     mf.frame_id = g.frame_id;
     mf.target_count = g.total_targets;
 
-    mf.targets = {};
-    if (g.slot_count > 0)
-    {
-        for (int i = 0; i < mode_frame_max_targets; ++i)
-            mf.targets[i] = g.slots[0].targets[i];
-    }
+    for (int i = 0; i < mode_frame_max_targets; ++i)
+        mf.targets[i] = g.targets[i];
 
     if (g.human)
     {
@@ -377,27 +360,23 @@ void log_frame(const radar::Gaze &g)
     const int cap = static_cast<int>(sizeof(buf)) - 1;
 
     uint32_t ms = esp_log_timestamp();
-    pos += snprintf(buf + pos, cap - pos, "$FRAME t=%lu", static_cast<unsigned long>(ms));
+    pos += snprintf(buf + pos, cap - pos, "$FRAME t=%lu n=%d:", static_cast<unsigned long>(ms),
+                    g.total_targets);
 
-    for (int s = 0; s < g.slot_count && pos < cap; ++s)
+    for (int t = 0; t < mode_frame_max_targets && pos < cap; ++t)
     {
-        const radar::SlotInfo *sl = &g.slots[s];
-        pos += snprintf(buf + pos, cap - pos, " %s=%d:", sl->name, sl->target_count);
-        for (int t = 0; t < mode_frame_max_targets && pos < cap; ++t)
+        if (t > 0)
+            buf[pos++] = '|';
+        const Target *tg = &g.targets[t];
+        if (tg->valid)
         {
-            if (t > 0)
-                buf[pos++] = '|';
-            const Target *tg = &sl->targets[t];
-            if (tg->valid)
-            {
-                pos += snprintf(buf + pos, cap - pos, "%d,%d,%u,%d", static_cast<int>(tg->x_mm),
-                                static_cast<int>(tg->y_mm), static_cast<unsigned>(tg->distance_mm),
-                                static_cast<int>(tg->speed_cm_s));
-            }
-            else
-            {
-                buf[pos++] = '-';
-            }
+            pos += snprintf(buf + pos, cap - pos, "%d,%d,%u,%d", static_cast<int>(tg->x_mm),
+                            static_cast<int>(tg->y_mm), static_cast<unsigned>(tg->distance_mm),
+                            static_cast<int>(tg->speed_cm_s));
+        }
+        else
+        {
+            buf[pos++] = '-';
         }
     }
     buf[pos] = '\0';
@@ -458,52 +437,37 @@ namespace radar
 esp_err_t init()
 {
     s_has_data = false;
-    s_slot = -1;
     s_focus_idx = -1;
     s_hold_deadline = 0;
     s_motion_lock_until = 0;
     memset(s_targets, 0, sizeof(s_targets));
     memset(s_persist, 0, sizeof(s_persist));
 
-    for (int i = 0; i < sensor_count; ++i)
-    {
-        if (sensor_cfg[i].enabled)
-        {
-            s_slot = i;
-            break;
-        }
-    }
-    if (s_slot < 0)
-    {
-        ESP_LOGE(TAG, "no enabled sensor in cfg::sensors");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    const cfg::SensorConfig *sc = &sensor_cfg[s_slot];
     const Ld2450::Config uart_cfg = {
-        .uart_num = sc->uart_num,
-        .tx_gpio = sc->tx_gpio,
-        .rx_gpio = sc->rx_gpio,
+        .uart_num = cfg::sensor.uart_num,
+        .tx_gpio = cfg::sensor.tx_gpio,
+        .rx_gpio = cfg::sensor.rx_gpio,
         .baud = cfg::radar::baud,
     };
     esp_err_t err = Ld2450::create(uart_cfg, s_dev);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "create %s failed: %s", sc->name, esp_err_to_name(err));
+        ESP_LOGE(TAG, "create %s failed: %s", cfg::sensor.name, esp_err_to_name(err));
         return err;
     }
 
-    ESP_LOGI(TAG, "sensor %-6s  pitch=%+3d°  inv=%d  uart=%d  rx=%d  tx=%d", sc->name,
-             sc->pitch_deg, sc->inverted, static_cast<int>(sc->uart_num), sc->rx_gpio, sc->tx_gpio);
+    ESP_LOGI(TAG, "sensor %-6s  inv=%d  uart=%d  rx=%d  tx=%d", cfg::sensor.name,
+             cfg::sensor.inverted, static_cast<int>(cfg::sensor.uart_num), cfg::sensor.rx_gpio,
+             cfg::sensor.tx_gpio);
 
-    if (sc->tx_gpio >= 0)
+    if (cfg::sensor.tx_gpio >= 0)
     {
         s_dev.unstick();
         char ver[32];
         if (s_dev.read_firmware_version(ver) == ESP_OK)
-            ESP_LOGI(TAG, "  %s firmware: %s", sc->name, ver);
+            ESP_LOGI(TAG, "  %s firmware: %s", cfg::sensor.name, ver);
         else
-            ESP_LOGW(TAG, "  %s firmware: could not read (TX wired?)", sc->name);
+            ESP_LOGW(TAG, "  %s firmware: could not read (TX wired?)", cfg::sensor.name);
     }
 
     pot_init();

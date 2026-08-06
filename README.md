@@ -31,17 +31,16 @@ Working prototype pinout (matches `components/config/include/config.h`). Common 
    Pot wiper ───────┤ D34                                     │
    Button ──────────┤ D21 (other leg → GND)                   │
                     └─────────────────────────────────────────┘
+```
 
-   3V3 ──┬── Left GC9A01 VCC ── Right GC9A01 VCC ── Pot end A
-   GND ──┬── Left/Right GC9A01 GND ── LD2450 GND ── Pot end B
-   VIN ──── LD2450 VCC (5V)
-
-   D18 ──┬── Left/Right SCL     D23 ──┬── Left/Right SDA
-   D4  ──┬── Left/Right DC      D27 ──┬── Left/Right RST
-   D5  ──── Left CS             D15 ──── Right CS
-   RX2 ←── LD2450 TX            TX2 ──→ LD2450 RX
-   D34 ←── Pot wiper
-   D21 ←── Button (to GND)
+```mermaid
+graph LR
+    ESP32["ESP32"] -->|"shared SPI bus\n(SCL · SDA · DC · RST)"| BUS((bus))
+    BUS -->|D5 CS| LEFT[Left GC9A01]
+    BUS -->|D15 CS| RIGHT[Right GC9A01]
+    ESP32 -->|UART2| RADAR[LD2450 Radar]
+    ESP32 -->|D34 ADC| POT[Potentiometer]
+    ESP32 -->|D21| BTN[Mode Button]
 ```
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
@@ -141,12 +140,7 @@ Sliders control LD2450 parameters in real time:
 
 Settings persist across power cycles on the LD2450.
 
-## Restoring multi-sensor (pitch stack)
+## Documentation
 
-The pitch-stacked fusion lives in `components/radar/radar_stack_multi.cpp` but is **not linked** by default.
-
-1. In [`components/radar/CMakeLists.txt`](components/radar/CMakeLists.txt), set `RADAR_SRC` to `radar_stack_multi.cpp`.
-2. In [`components/config/include/config.h`](components/config/include/config.h), restore the commented two-row `CFG_SENSORS` (lower ~−20°, upper ~+20° on UART2 + UART1).
-3. Rebuild. Vertical then comes from visibility bands again; the potentiometer is unused in that build.
-
-Optional later: third (mid) sensor + 74HC4051 — multi code already has `mux_channel` hooks.
+- [Software Design](docs/software-design.md) — architecture, concurrency model, class diagrams, sequence diagrams
+- [Log Messages](docs/log-messages.md) — reference for `$FRAME`, `$LOST`, `$MODE`, and other log tags

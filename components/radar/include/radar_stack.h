@@ -25,30 +25,17 @@
 namespace radar
 {
 
-inline constexpr int max_slots = 4;
-
-struct SlotInfo
-{
-    const char *name{};
-    int target_count{};
-    Target targets[mode_frame_max_targets]{};
-};
-
 struct Gaze
 {
     bool human{};
     float azimuth_deg{};
     float elevation_norm{0.5f};
-    int vertical_band{-1};
-    int band_count{1};
-    uint8_t see_mask{};
 
     Target primary{};
     uint32_t frame_id{};
 
     int total_targets{};
-    int slot_count{};
-    SlotInfo slots[max_slots]{};
+    Target targets[mode_frame_max_targets]{};
 };
 
 struct DevCommand

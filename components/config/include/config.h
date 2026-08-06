@@ -20,8 +20,6 @@
  * placement, or tuning parameters.  Rebuild after changes:  idf.py build
  */
 
-#include <array>
-
 #include "driver/spi_master.h"
 #include "driver/uart.h"
 #include "hal/adc_types.h"
@@ -115,14 +113,6 @@ inline constexpr int max_dist_mm = 6000; /* farther than this → noise         
 inline constexpr int persist_frames = 2; /* must appear N of last 3 frames     */
 } // namespace filter
 
-/* ── Mux pins (reserved for 74HC4051) ────────────────────────────── */
-
-namespace mux
-{
-inline constexpr int s0_gpio = -1;
-inline constexpr int s1_gpio = -1;
-} // namespace mux
-
 /* ── Mode button ─────────────────────────────────────────────────── */
 
 namespace button
@@ -158,19 +148,16 @@ inline constexpr float smooth = 0.15f;     /* ADC lerp factor (0‥1)           
 
 } // namespace pot
 
-/* ── Sensor array ────────────────────────────────────────────────── *
+/* ── Sensor configuration ────────────────────────────────────────── *
  *
- * Each row defines one LD2450 module.  Fields:
+ * Single LD2450 module on a dedicated UART.
  *
- *   name        – label for log messages
- *   uart_num    – ESP32 UART peripheral (UART_NUM_1 or UART_NUM_2)
- *   rx_gpio     – ESP32 GPIO receiving the sensor's TX line
- *   tx_gpio     – ESP32 GPIO to sensor RX, or -1 if not connected
- *   pitch_deg   – physical tilt relative to horizon (positive = up)
- *   inverted    – true if the module is mounted upside-down;
- *                 this negates the X axis so left/right stay correct
- *   mux_channel – analog-mux channel (>=0), or -1 for dedicated UART
- *   enabled     – false to skip this sensor without removing the row
+ *   name      – label for log messages
+ *   uart_num  – ESP32 UART peripheral (UART_NUM_1 or UART_NUM_2)
+ *   rx_gpio   – ESP32 GPIO receiving the sensor's TX line
+ *   tx_gpio   – ESP32 GPIO to sensor RX, or -1 if not connected
+ *   inverted  – true if the module is mounted upside-down;
+ *               this negates the X axis so left/right stay correct
  */
 
 struct SensorConfig
@@ -179,17 +166,12 @@ struct SensorConfig
     uart_port_t uart_num;
     int rx_gpio;
     int tx_gpio;
-    int pitch_deg;
     bool inverted;
-    int mux_channel;
-    bool enabled;
 };
 
 /* Default: one flat sensor on UART2 (RX2/TX2).
  * inverted=true negates radar X so left/right matches the eyes after
  * panel rotation (set false if gaze tracks the wrong way horizontally). */
-inline constexpr std::array sensors = {
-    SensorConfig{"main", UART_NUM_2, 16, 17, 0, true, -1, true},
-};
+inline constexpr SensorConfig sensor{"main", UART_NUM_2, 16, 17, true};
 
 } // namespace cfg
