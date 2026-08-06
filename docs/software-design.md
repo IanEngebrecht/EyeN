@@ -107,30 +107,9 @@ classDiagram
     }
 
     ModeFrame o-- "3" Target : contains
-
-    class Gaze {
-        +bool human
-        +float azimuth_deg
-        +float elevation_norm
-        +Target primary
-        +uint32_t frame_id
-        +int total_targets
-        +SlotInfo slots[4]
-    }
-
-    class SlotInfo {
-        +const char* name
-        +int target_count
-        +Target targets[3]
-    }
-
-    Gaze o-- "4" SlotInfo : contains
-    SlotInfo o-- "3" Target : contains
-
-    Gaze ..> ModeFrame : "build_mode_frame()"
 ```
 
-`Target` is the raw per-target output from the LD2450: position, speed, and a validity flag. The radar component produces a `Gaze` internally (carrying slot-level detail for multi-sensor support), then converts it to a `ModeFrame` — the simplified struct that crosses the queue to the render task.
+`Target` is the raw per-target output from the LD2450: position, speed, and a validity flag. The radar component filters and selects an attention target, computes gaze (azimuth + elevation), and packs the result into a `ModeFrame` — the struct that crosses the queue to the render task.
 
 ## Display Mode Interface
 
