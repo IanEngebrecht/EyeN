@@ -34,20 +34,13 @@ Working prototype pinout (matches `components/config/include/config.h`). Common 
 ```
 
 ```mermaid
-graph TD
-    ESP32["ELEGOO ESP32-WROOM-32"]
-
-    ESP32 -->|"D18 SCL · D23 SDA\nD4 DC · D27 RST"| BUS((SPI bus))
+graph LR
+    ESP32["ESP32"] -->|"shared SPI bus\n(SCL · SDA · DC · RST)"| BUS((bus))
     BUS -->|D5 CS| LEFT[Left GC9A01]
     BUS -->|D15 CS| RIGHT[Right GC9A01]
-
-    ESP32 -->|"RX2 ← sensor TX\nTX2 → sensor RX"| RADAR[LD2450 Radar]
+    ESP32 -->|UART2| RADAR[LD2450 Radar]
     ESP32 -->|D34 ADC| POT[Height Pot]
     ESP32 -->|D21| BTN[Mode Button]
-
-    V33[3V3] -.-> LEFT & RIGHT & POT
-    VIN[VIN 5V] -.-> RADAR
-    GND -.-> LEFT & RIGHT & RADAR & POT & BTN
 ```
 
 ### GC9A01 (both eyes — shared SPI, 7-pin)
