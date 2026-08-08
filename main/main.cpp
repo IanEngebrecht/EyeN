@@ -12,9 +12,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string_view>
 
@@ -292,6 +294,25 @@ void init_uart0_rx()
     }
 }
 
+/* ── Performance instrumentation ─────────────────────────────────── */
+
+constexpr int64_t perf_interval_us = 5'000'000;
+
+int64_t s_perf_start_us;
+uint32_t s_perf_frame_count;
+int64_t s_perf_frame_min_us;
+int64_t s_perf_frame_max_us;
+int64_t s_perf_frame_sum_us;
+
+void perf_reset(int64_t now)
+{
+    s_perf_start_us = now;
+    s_perf_frame_count = 0;
+    s_perf_frame_min_us = INT64_MAX;
+    s_perf_frame_max_us = 0;
+    s_perf_frame_sum_us = 0;
+}
+
 /* ── Mode switching ──────────────────────────────────────────────── */
 
 void switch_mode(int new_idx)
@@ -303,6 +324,7 @@ void switch_mode(int new_idx)
     s_mode_idx = new_idx;
     s_modes[s_mode_idx]->enter(left, right);
     ESP_LOGI(TAG, "$MODE %s", s_modes[s_mode_idx]->name());
+    perf_reset(esp_timer_get_time());
 }
 
 bool s_pot_at_limit = false;
@@ -394,6 +416,8 @@ extern "C" void app_main(void)
     uint32_t last_frame_id = 0;
     uint32_t missed_total = 0;
 
+    perf_reset(esp_timer_get_time());
+
     while (true)
     {
         poll_uart0_commands();
@@ -446,7 +470,29 @@ extern "C" void app_main(void)
         ModeFrame mf;
         build_mode_frame(gaze, az_deg, mf);
 
+        const int64_t t0 = esp_timer_get_time();
         s_modes[s_mode_idx]->render(left, right, mf);
+        const int64_t t1 = esp_timer_get_time();
+
+        const int64_t frame_us = t1 - t0;
+        s_perf_frame_count++;
+        s_perf_frame_sum_us += frame_us;
+        s_perf_frame_min_us = std::min(s_perf_frame_min_us, frame_us);
+        s_perf_frame_max_us = std::max(s_perf_frame_max_us, frame_us);
+
+        const int64_t elapsed = t1 - s_perf_start_us;
+        if (elapsed >= perf_interval_us && s_perf_frame_count > 0)
+        {
+            const float fps =
+                static_cast<float>(s_perf_frame_count) / (static_cast<float>(elapsed) * 1e-6f);
+            const int64_t avg_us = s_perf_frame_sum_us / static_cast<int64_t>(s_perf_frame_count);
+            ESP_LOGI(TAG, "$PERF mode=%s fps=%.1f frame_us=%lld/%lld/%lld(min/avg/max) frames=%lu",
+                     s_modes[s_mode_idx]->name(), static_cast<double>(fps),
+                     static_cast<long long>(s_perf_frame_min_us), static_cast<long long>(avg_us),
+                     static_cast<long long>(s_perf_frame_max_us),
+                     static_cast<unsigned long>(s_perf_frame_count));
+            perf_reset(t1);
+        }
 
         if (++log_skip >= 10)
         {
