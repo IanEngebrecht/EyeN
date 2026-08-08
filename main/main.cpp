@@ -12,10 +12,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string_view>
 
@@ -202,6 +204,29 @@ float s_az_rate;
 int64_t s_az_fixed_us;
 uint32_t s_az_last_frame;
 
+/* ── Performance instrumentation ────────────────────────────────── */
+
+constexpr int64_t perf_interval_us = 5'000'000; // 5 seconds
+
+int64_t s_perf_start_us;
+uint32_t s_perf_frame_count;
+int64_t s_perf_frame_min_us;
+int64_t s_perf_frame_max_us;
+int64_t s_perf_frame_sum_us;
+
+uint32_t s_perf_radar_last_frame_id;
+int64_t s_perf_radar_last_us;
+float s_perf_radar_fps;
+
+void perf_reset(int64_t now)
+{
+    s_perf_start_us = now;
+    s_perf_frame_count = 0;
+    s_perf_frame_min_us = INT64_MAX;
+    s_perf_frame_max_us = 0;
+    s_perf_frame_sum_us = 0;
+}
+
 float aim_azimuth_deg(float az, uint32_t frame_id)
 {
     const int64_t now = esp_timer_get_time();
@@ -282,6 +307,11 @@ void switch_render_mode(int new_idx)
     ModeFrame mf{};
     bool have_frame = false;
 
+    perf_reset(esp_timer_get_time());
+    s_perf_radar_last_frame_id = 0;
+    s_perf_radar_last_us = 0;
+    s_perf_radar_fps = 0.0f;
+
     while (true)
     {
         ModeSwitch ms;
@@ -291,6 +321,22 @@ void switch_render_mode(int new_idx)
         ModeFrame new_mf;
         if (s_frame_q.receive(new_mf, pdMS_TO_TICKS(10)))
         {
+            /* Track radar update rate via frame_id deltas */
+            const int64_t rx_now = esp_timer_get_time();
+            if (s_perf_radar_last_us != 0 && new_mf.frame_id != s_perf_radar_last_frame_id)
+            {
+                const uint32_t id_delta = new_mf.frame_id - s_perf_radar_last_frame_id;
+                const float dt = static_cast<float>(rx_now - s_perf_radar_last_us) * 1e-6f;
+                if (dt > 0.0f)
+                {
+                    const float instant = static_cast<float>(id_delta) / dt;
+                    /* Exponential moving average (alpha ~0.3) */
+                    s_perf_radar_fps += (instant - s_perf_radar_fps) * 0.3f;
+                }
+            }
+            s_perf_radar_last_frame_id = new_mf.frame_id;
+            s_perf_radar_last_us = rx_now;
+
             mf = new_mf;
             have_frame = true;
         }
@@ -301,7 +347,33 @@ void switch_render_mode(int new_idx)
         if (mf.human)
             mf.azimuth_deg = aim_azimuth_deg(mf.azimuth_deg, mf.frame_id);
 
+        /* Measure render() call duration */
+        const int64_t t0 = esp_timer_get_time();
         s_modes[s_render_mode_idx]->render(left, right, mf);
+        const int64_t t1 = esp_timer_get_time();
+
+        const int64_t frame_us = t1 - t0;
+        s_perf_frame_count++;
+        s_perf_frame_sum_us += frame_us;
+        s_perf_frame_min_us = std::min(s_perf_frame_min_us, frame_us);
+        s_perf_frame_max_us = std::max(s_perf_frame_max_us, frame_us);
+
+        /* Periodic perf log */
+        const int64_t elapsed = t1 - s_perf_start_us;
+        if (elapsed >= perf_interval_us && s_perf_frame_count > 0)
+        {
+            const float period_s = static_cast<float>(elapsed) * 1e-6f;
+            const float render_fps = static_cast<float>(s_perf_frame_count) / period_s;
+            const int64_t avg_us = s_perf_frame_sum_us / static_cast<int64_t>(s_perf_frame_count);
+            ESP_LOGI(TAG,
+                     "$PERF render_fps=%.1f frame_us=%lld/%lld/%lld(min/avg/max) frames=%lu "
+                     "radar_fps=%.1f",
+                     static_cast<double>(render_fps), static_cast<long long>(s_perf_frame_min_us),
+                     static_cast<long long>(avg_us), static_cast<long long>(s_perf_frame_max_us),
+                     static_cast<unsigned long>(s_perf_frame_count),
+                     static_cast<double>(s_perf_radar_fps));
+            perf_reset(t1);
+        }
     }
 }
 
